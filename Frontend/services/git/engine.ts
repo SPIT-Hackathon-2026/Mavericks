@@ -246,7 +246,7 @@ export class GitEngine {
     }
   }
 
-  async push(repoId: string, token: string): Promise<void> {
+  async push(repoId: string, token: string, branch?: string): Promise<void> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
 
@@ -259,7 +259,7 @@ export class GitEngine {
     }
 
     const ref =
-      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+      branch ?? (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
     const txId = randomId();
     await appendTx(dir, {
       id: txId,
@@ -283,6 +283,63 @@ export class GitEngine {
     } catch (err) {
       await failTx(dir, txId);
       console.error(TAG, `push FAILED -> ${repoId}`, err);
+      throw err;
+    }
+  }
+
+  async pull(
+    repoId: string,
+    token: string,
+    branch?: string,
+    author?: { name: string; email: string }
+  ): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+
+    const remotes = await git.listRemotes({ fs, dir });
+    if (remotes.length === 0) {
+      throw new Error(
+        'No remote configured. Add a remote (e.g. origin) before pulling.'
+      );
+    }
+
+    const ref =
+      branch ?? (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+    const txId = randomId();
+    await appendTx(dir, {
+      id: txId,
+      type: "pull",
+      status: "PENDING",
+      message: `pull ${ref}`,
+      startedAt: Date.now(),
+    });
+    try {
+      await git.fetch({
+        fs,
+        http,
+        dir,
+        remote: "origin",
+        ref,
+        singleBranch: true,
+        onAuth: () => ({ username: token, password: "" }),
+      });
+      // Fast-forward merge: merge the fetched remote branch into the current one
+      await git.merge({
+        fs,
+        dir,
+        ours: ref,
+        theirs: `remotes/origin/${ref}`,
+        author: author ?? { name: "GitLane User", email: "user@gitlane.app" },
+        fastForward: true,
+      });
+      // Checkout to update the working directory
+      await git.checkout({ fs, dir, ref });
+      await completeTx(dir, txId);
+      await deleteGitCache(dir);
+      console.log(TAG, `pull COMPLETE -> ${repoId} (${ref})`);
+    } catch (err) {
+      await failTx(dir, txId);
+      console.error(TAG, `pull FAILED -> ${repoId}`, err);
       throw err;
     }
   }

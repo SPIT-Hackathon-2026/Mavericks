@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft, GitBranch, MoreVertical, Folder, FileCode2, FileText,
   FileJson, File, ChevronRight, Clock, Square, CheckSquare,
-  Send, ChevronDown, Plus, Trash2, GitCommit, Link,
+  Send, ChevronDown, Plus, Trash2, GitCommit, Link, Download,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
@@ -120,7 +120,7 @@ export default function RepositoryDetail() {
   const insets = useSafeAreaInsets();
   const {
     repositories, files, commits, selectedRepo, commitChanges, setSelectedRepoId,
-    switchBranch, createBranch, stageFile, unstageFile, pushSelectedRepo,
+    switchBranch, createBranch, stageFile, unstageFile, pushSelectedRepo, pullSelectedRepo,
     addRemote, getRemotes, showToast,
   } = useGit();
 
@@ -131,6 +131,10 @@ export default function RepositoryDetail() {
   const [showBranchSelector, setShowBranchSelector] = useState(false);
   const [stagedFileIds, setStagedFileIds] = useState<Set<string>>(new Set());
   const [historySubIndex, setHistorySubIndex] = useState(0);
+  const [showCreateBranch, setShowCreateBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [showPushBranchPicker, setShowPushBranchPicker] = useState(false);
+  const [showPullBranchPicker, setShowPullBranchPicker] = useState(false);
   
   useEffect(() => {
     if (id && selectedRepo?.id !== id) {
@@ -197,6 +201,35 @@ export default function RepositoryDetail() {
     setCommitMessage('');
     setStagedFileIds(new Set());
   }, [stagedFiles.length, commitMessage, commitChanges]);
+
+  const handleCreateBranch = useCallback(async () => {
+    if (!repo || !newBranchName.trim()) return;
+    try {
+      await createBranch(repo.id, newBranchName.trim());
+      setNewBranchName('');
+      setShowCreateBranch(false);
+      setShowBranchSelector(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to create branch';
+      showToast('error', msg);
+    }
+  }, [repo, newBranchName, createBranch, showToast]);
+
+  const handlePushToBranch = useCallback((branchName: string) => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    setShowPushBranchPicker(false);
+    pushSelectedRepo(branchName);
+  }, [pushSelectedRepo]);
+
+  const handlePullFromBranch = useCallback((branchName: string) => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    setShowPullBranchPicker(false);
+    pullSelectedRepo(branchName);
+  }, [pullSelectedRepo]);
 
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState('');
@@ -267,23 +300,66 @@ export default function RepositoryDetail() {
         </View>
         <View style={styles.headerRight}>
           <TouchableOpacity
+            style={styles.pullBtn}
+            onPress={() => setShowPullBranchPicker(!showPullBranchPicker)}
+            activeOpacity={0.7}
+          >
+            <Download size={16} color={Colors.accentPrimary} />
+            <Text style={styles.pushText}>Pull</Text>
+            <ChevronDown size={10} color={Colors.accentPrimary} />
+          </TouchableOpacity>
+          <TouchableOpacity
             style={styles.pushBtn}
-            onPress={() => {
-              if (Platform.OS !== 'web') {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              }
-              pushSelectedRepo();
-            }}
+            onPress={() => setShowPushBranchPicker(!showPushBranchPicker)}
             activeOpacity={0.7}
           >
             <Send size={16} color={Colors.accentPrimary} />
             <Text style={styles.pushText}>Push</Text>
+            <ChevronDown size={10} color={Colors.accentPrimary} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.menuBtn} onPress={handleMenuPress}>
             <MoreVertical size={20} color={Colors.textSecondary} />
           </TouchableOpacity>
         </View>
       </View>
+
+      {showPushBranchPicker && (
+        <View style={styles.branchDropdown}>
+          <Text style={styles.dropdownLabel}>Push to branch:</Text>
+          {repo.branches.map(branch => (
+            <TouchableOpacity
+              key={branch.name}
+              style={[styles.branchItem, branch.isCurrent && styles.branchItemActive]}
+              onPress={() => handlePushToBranch(branch.name)}
+            >
+              <GitBranch size={14} color={branch.isCurrent ? Colors.accentPrimary : Colors.textMuted} />
+              <Text style={[styles.branchItemText, branch.isCurrent && styles.branchItemTextActive]}>
+                {branch.name}
+              </Text>
+              {branch.isCurrent && <Text style={styles.headLabel}>HEAD</Text>}
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {showPullBranchPicker && (
+        <View style={styles.branchDropdown}>
+          <Text style={styles.dropdownLabel}>Pull from branch:</Text>
+          {repo.branches.map(branch => (
+            <TouchableOpacity
+              key={branch.name}
+              style={[styles.branchItem, branch.isCurrent && styles.branchItemActive]}
+              onPress={() => handlePullFromBranch(branch.name)}
+            >
+              <GitBranch size={14} color={branch.isCurrent ? Colors.accentPrimary : Colors.textMuted} />
+              <Text style={[styles.branchItemText, branch.isCurrent && styles.branchItemTextActive]}>
+                {branch.name}
+              </Text>
+              {branch.isCurrent && <Text style={styles.headLabel}>HEAD</Text>}
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
 
       {showBranchSelector && (
         <View style={styles.branchDropdown}>
@@ -303,10 +379,35 @@ export default function RepositoryDetail() {
               {branch.isCurrent && <Text style={styles.headLabel}>HEAD</Text>}
             </TouchableOpacity>
           ))}
-          <TouchableOpacity style={styles.branchItem}>
+          <TouchableOpacity
+            style={styles.branchItem}
+            onPress={() => setShowCreateBranch(true)}
+          >
             <Plus size={14} color={Colors.accentPrimary} />
             <Text style={[styles.branchItemText, { color: Colors.accentPrimary }]}>Create new branch</Text>
           </TouchableOpacity>
+          {showCreateBranch && (
+            <View style={styles.createBranchRow}>
+              <TextInput
+                style={styles.createBranchInput}
+                placeholder="Branch name..."
+                placeholderTextColor={Colors.textMuted}
+                value={newBranchName}
+                onChangeText={setNewBranchName}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus
+                onSubmitEditing={handleCreateBranch}
+              />
+              <TouchableOpacity
+                style={[styles.createBranchBtn, !newBranchName.trim() && { opacity: 0.4 }]}
+                onPress={handleCreateBranch}
+                disabled={!newBranchName.trim()}
+              >
+                <Text style={styles.createBranchBtnText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
       )}
 
@@ -529,7 +630,7 @@ export default function RepositoryDetail() {
 }
 
 function TerminalPanel() {
-  const { selectedRepo, files, commits, stageFile, unstageFile, commitChanges, createBranch, switchBranch, mergeInto, showToast, pushSelectedRepo } = useGit();
+  const { selectedRepo, files, commits, stageFile, unstageFile, commitChanges, createBranch, switchBranch, mergeInto, showToast, pushSelectedRepo, pullSelectedRepo } = useGit();
   const [history, setHistory] = useState<string[]>(["Type 'help' to see available commands"]);
   const [cmd, setCmd] = useState("");
 
@@ -546,7 +647,7 @@ function TerminalPanel() {
     try {
       switch (head) {
         case "help":
-          append("Available: status, add <path>, reset <path>, commit -m <msg>, branch <name>, checkout <branch>, merge <branch>, push, log, files, open <path>");
+          append("Available: status, add <path>, reset <path>, commit -m <msg>, branch <name>, checkout <branch>, merge <branch>, push [branch], pull [branch], log, files, open <path>");
           break;
         case "status": {
           if (!selectedRepo) { append("No repository selected"); break; }
@@ -611,8 +712,15 @@ function TerminalPanel() {
           break;
         }
         case "push": {
-          await pushSelectedRepo();
-          append("pushed to origin");
+          const branch = args[0] || undefined;
+          await pushSelectedRepo(branch);
+          append(`pushed to origin${branch ? `/${branch}` : ''}`);
+          break;
+        }
+        case "pull": {
+          const branch = args[0] || undefined;
+          await pullSelectedRepo(branch);
+          append(`pulled from origin${branch ? `/${branch}` : ''}`);
           break;
         }
         case "log":
@@ -625,7 +733,7 @@ function TerminalPanel() {
       append(`Error: ${err?.message ?? String(err)}`);
       showToast("error", err?.message ?? "Command failed");
     }
-  }, [cmd, files, commits, selectedRepo, append, stageFile, unstageFile, commitChanges, createBranch, switchBranch, mergeInto, showToast, pushSelectedRepo]);
+  }, [cmd, files, commits, selectedRepo, append, stageFile, unstageFile, commitChanges, createBranch, switchBranch, mergeInto, showToast, pushSelectedRepo, pullSelectedRepo]);
 
   return (
     <View style={{ flex: 1 }}>
@@ -713,8 +821,19 @@ const styles = StyleSheet.create({
   pushBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
+    gap: 4,
+    paddingHorizontal: 8,
+    height: 32,
+    borderRadius: Radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.accentPrimary,
+    backgroundColor: Colors.accentPrimaryDim,
+  },
+  pullBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
     height: 32,
     borderRadius: Radius.full,
     borderWidth: StyleSheet.hairlineWidth,
@@ -725,6 +844,47 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600' as const,
     color: Colors.accentPrimary,
+  },
+  dropdownLabel: {
+    fontSize: 11,
+    fontWeight: '600' as const,
+    color: Colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: 4,
+  },
+  createBranchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: Colors.borderMuted,
+  },
+  createBranchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: Colors.textPrimary,
+    backgroundColor: Colors.bgTertiary,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: Colors.borderDefault,
+  },
+  createBranchBtn: {
+    backgroundColor: Colors.accentPrimary,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  createBranchBtnText: {
+    color: '#fff',
+    fontWeight: '600' as const,
+    fontSize: 13,
   },
   branchDropdown: {
     backgroundColor: Colors.bgElevated,

@@ -312,30 +312,63 @@ export const [GitProvider, useGit] = createContextHook(() => {
     [cloneRepository],
   );
 
-  const pushSelectedRepo = useCallback(async () => {
+  const pushSelectedRepo = useCallback(async (branch?: string) => {
     if (!selectedRepo) return;
     if (!settings.githubToken) {
       showToast("warning", "GitHub token not set");
       return;
     }
 
+    const targetBranch = branch ?? selectedRepo.currentBranch ?? 'main';
+
     // Check connectivity first
     const online = await pushQueue.isOnline();
     if (!online) {
       // Queue the push for later
-      const branch = selectedRepo.currentBranch ?? 'main';
-      await pushQueue.enqueue(selectedRepo.id, selectedRepo.name, branch);
+      await pushQueue.enqueue(selectedRepo.id, selectedRepo.name, targetBranch);
       return; // toast shown by queue subscriber
     }
 
     try {
-      await gitEngine.push(selectedRepo.id, settings.githubToken);
-      showToast("success", "Pushed to origin");
+      await gitEngine.push(selectedRepo.id, settings.githubToken, targetBranch);
+      showToast("success", `Pushed to origin/${targetBranch}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Push failed";
       showToast("error", message);
     }
   }, [selectedRepo, settings.githubToken]);
+
+  const pullSelectedRepo = useCallback(async (branch?: string) => {
+    if (!selectedRepo) return;
+    if (!settings.githubToken) {
+      showToast("warning", "GitHub token not set");
+      return;
+    }
+
+    const targetBranch = branch ?? selectedRepo.currentBranch ?? 'main';
+
+    const online = await pushQueue.isOnline();
+    if (!online) {
+      showToast("warning", "Cannot pull while offline");
+      return;
+    }
+
+    try {
+      const author = {
+        name: settings.userConfig.name,
+        email: settings.userConfig.email,
+      };
+      await gitEngine.pull(selectedRepo.id, settings.githubToken, targetBranch, author);
+      await storage.deleteCache(selectedRepo.path);
+      queryClient.invalidateQueries({ queryKey: ["repositories"] });
+      queryClient.invalidateQueries({ queryKey: ["files", selectedRepo.id] });
+      queryClient.invalidateQueries({ queryKey: ["commits", selectedRepo.id] });
+      showToast("success", `Pulled from origin/${targetBranch}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Pull failed";
+      showToast("error", message);
+    }
+  }, [selectedRepo, settings.githubToken, settings.userConfig, queryClient]);
 
   const addRemote = useCallback(
     async (repoId: string, remoteName: string, url: string) => {
@@ -414,6 +447,7 @@ export const [GitProvider, useGit] = createContextHook(() => {
     cloneRepository,
     cloneGitHubRepo,
     pushSelectedRepo,
+    pullSelectedRepo,
     addRemote,
     getRemotes,
     mergeInto,
