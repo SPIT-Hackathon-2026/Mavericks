@@ -10,7 +10,6 @@ import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
 import { Spacing, Radius, Shadows } from '@/constants/theme';
 import { useGit } from '@/contexts/GitContext';
-import type { Repository } from '@/types/git';
 
 export default function CreateRepoModal() {
   const router = useRouter();
@@ -25,41 +24,23 @@ export default function CreateRepoModal() {
 
   const isValid = name.trim().length > 0 && !name.includes(' ');
 
-  const handleCreate = useCallback(() => {
+  const handleCreate = useCallback(async () => {
     if (!isValid || creating) return;
     setCreating(true);
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
 
-    setTimeout(() => {
-      const newRepo: Repository = {
-        id: Date.now().toString(),
-        name: name.trim(),
-        path: `${location}${name.trim()}`,
-        currentBranch: 'main',
-        branches: [{
-          name: 'main',
-          isRemote: false,
-          isCurrent: true,
-          lastCommitSha: Math.random().toString(36).substring(2, 9),
-          lastCommitMessage: 'Initial commit',
-        }],
-        stagedCount: 0,
-        modifiedCount: 0,
-        conflictCount: 0,
-        lastActivity: 'Just now',
-        size: '< 1 MB',
-        commitCount: addReadme ? 1 : 0,
-      };
-      addRepository(newRepo);
+    try {
+      await addRepository({ name: name.trim(), addReadme });
       if (Platform.OS !== 'web') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
-      setCreating(false);
       router.dismiss();
-    }, 1200);
-  }, [name, location, addReadme, isValid, creating, addRepository, router]);
+    } finally {
+      setCreating(false);
+    }
+  }, [isValid, creating, addRepository, name, addReadme, router]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>

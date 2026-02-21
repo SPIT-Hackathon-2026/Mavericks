@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Animated,
   TouchableWithoutFeedback, TextInput, Platform,
@@ -148,20 +148,36 @@ export default function RepositoryDetail() {
   const unstagedFiles = changedFiles.filter(f => !stagedFileIds.has(f.id));
   const stagedFiles = changedFiles.filter(f => stagedFileIds.has(f.id));
 
-  const toggleStage = useCallback((fileId: string) => {
+  useEffect(() => {
+    const stagedFromStatus = new Set(changedFiles.filter(f => f.status === 'staged').map(f => f.id));
+    if (stagedFromStatus.size > 0) {
+      setStagedFileIds(stagedFromStatus);
+    }
+  }, [changedFiles]);
+
+  const toggleStage = useCallback(async (file: GitFile) => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
+    const fileKey = file.path.replace(/^\//, '');
+    const shouldStage = !stagedFileIds.has(file.id);
+
+    if (shouldStage) {
+      await stageFile(fileKey);
+    } else {
+      await unstageFile(fileKey);
+    }
+
     setStagedFileIds(prev => {
       const next = new Set(prev);
-      if (next.has(fileId)) {
-        next.delete(fileId);
+      if (shouldStage) {
+        next.add(file.id);
       } else {
-        next.add(fileId);
+        next.delete(file.id);
       }
       return next;
     });
-  }, []);
+  }, [stageFile, unstageFile, stagedFileIds]);
 
   const handleCommit = useCallback(() => {
     if (stagedFiles.length === 0 || !commitMessage.trim()) return;
@@ -292,7 +308,7 @@ export default function RepositoryDetail() {
                     key={file.id}
                     file={file}
                     staged={false}
-                    onToggle={() => toggleStage(file.id)}
+                    onToggle={() => toggleStage(file)}
                   />
                 ))}
               </>
@@ -311,7 +327,7 @@ export default function RepositoryDetail() {
                     key={file.id}
                     file={file}
                     staged
-                    onToggle={() => toggleStage(file.id)}
+                    onToggle={() => toggleStage(file)}
                   />
                 ))}
               </>
