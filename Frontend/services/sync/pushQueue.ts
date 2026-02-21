@@ -9,6 +9,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Network from 'expo-network';
 import { gitEngine } from '@/services/git/engine';
+import { notificationService } from '@/services/notifications/notificationService';
 
 const TAG = '[PushQueue]';
 const STORAGE_KEY = 'gitlane:pushQueue';
@@ -130,7 +131,7 @@ class PushQueueManager {
         type: 'queued',
         push: existing,
         remaining: queue.filter((p) => p.status === 'queued').length,
-        message: `Push for "${repoName}" is already queued`,
+        message: `Push request for "${repoName}" is already in the queue`,
       });
       return existing;
     }
@@ -154,8 +155,11 @@ class PushQueueManager {
       type: 'queued',
       push: entry,
       remaining,
-      message: `Push for "${repoName}" queued — will sync when online`,
+      message: `📥 Push request added to queue for "${repoName}" (${branch}) — will auto-sync when back online`,
     });
+
+    // Fire device notification
+    notificationService.pushQueued(repoName, branch);
 
     return entry;
   }
@@ -194,8 +198,11 @@ class PushQueueManager {
     this.emit({
       type: 'drain-start',
       remaining: pending.length,
-      message: `Syncing ${pending.length} queued push${pending.length > 1 ? 'es' : ''}…`,
+      message: `🔄 Back online! Syncing ${pending.length} queued push${pending.length > 1 ? 'es' : ''}…`,
     });
+
+    // Fire device notification
+    notificationService.syncStarted(pending.length);
 
     // If no token passed, try to read from stored settings
     let authToken = token;
@@ -226,7 +233,7 @@ class PushQueueManager {
         type: 'syncing',
         push: entry,
         remaining: pending.length - successCount - failCount,
-        message: `Pushing "${entry.repoName}" (${entry.branch})…`,
+        message: `⏳ Executing push for "${entry.repoName}" (${entry.branch})…`,
       });
 
       try {
@@ -239,8 +246,11 @@ class PushQueueManager {
           type: 'success',
           push: entry,
           remaining: pending.length - successCount - failCount,
-          message: `Pushed "${entry.repoName}" successfully`,
+          message: `✅ Push executed in "${entry.repoName}" (${entry.branch}) — changes are live on remote`,
         });
+
+        // Fire device notification
+        notificationService.pushExecuted(entry.repoName, entry.branch);
       } catch (err) {
         entry.status = 'failed';
         entry.error = err instanceof Error ? err.message : String(err);
@@ -251,8 +261,11 @@ class PushQueueManager {
           type: 'failed',
           push: entry,
           remaining: pending.length - successCount - failCount,
-          message: `Push failed for "${entry.repoName}": ${entry.error}`,
+          message: `❌ Push failed for "${entry.repoName}": ${entry.error}`,
         });
+
+        // Fire device notification
+        notificationService.pushFailed(entry.repoName, entry.error ?? 'Unknown error');
       }
 
       await saveQueue(queue);
@@ -267,9 +280,12 @@ class PushQueueManager {
       remaining: failCount,
       message:
         failCount === 0
-          ? `All ${successCount} push${successCount > 1 ? 'es' : ''} synced!`
-          : `${successCount} synced, ${failCount} failed`,
+          ? `🎉 Sync complete — all ${successCount} queued push${successCount > 1 ? 'es' : ''} executed successfully!`
+          : `⚠️ Sync finished — ${successCount} push${successCount > 1 ? 'es' : ''} succeeded, ${failCount} failed`,
     });
+
+    // Fire device notification for sync completion
+    notificationService.syncComplete(successCount, failCount);
 
     this.isSyncing = false;
   }
