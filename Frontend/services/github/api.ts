@@ -69,3 +69,51 @@ export async function pollDeviceToken(clientId: string, deviceCode: string, inte
     return data.access_token as string;
   }
 }
+
+// ─── Commit diff via GitHub API ───────────────────────────────────────────────
+
+export interface GitHubFilePatch {
+  filename: string;
+  previous_filename?: string;
+  status: 'added' | 'removed' | 'modified' | 'renamed' | 'copied' | 'changed' | 'unchanged';
+  additions: number;
+  deletions: number;
+  patch?: string; // unified diff hunk string from GitHub
+}
+
+/**
+ * Parses a GitHub remote URL (https or ssh) and returns { owner, repo }.
+ * Returns null if the URL is not a GitHub URL.
+ */
+export function parseGitHubRemoteUrl(remoteUrl: string): { owner: string; repo: string } | null {
+  // https://github.com/owner/repo.git  or  git@github.com:owner/repo.git
+  const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+?)(?:\.git)?$/);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+/**
+ * Fetches the list of file patches for a single commit from the GitHub API.
+ * Returns an empty array if the commit has no files or the API call fails cleanly.
+ * Throws on network/auth errors.
+ */
+export async function fetchGitHubCommitFiles(
+  owner: string,
+  repo: string,
+  sha: string,
+  token: string,
+): Promise<GitHubFilePatch[]> {
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/commits/${sha}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `token ${token}`,
+      },
+    },
+  );
+  if (!res.ok) throw new Error(`GitHub API ${res.status} for ${sha}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data = await res.json() as { files?: any[] };
+  return (data.files ?? []) as GitHubFilePatch[];
+}

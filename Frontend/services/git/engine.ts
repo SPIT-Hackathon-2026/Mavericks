@@ -10,6 +10,24 @@ import type {
   ChangeType,
 } from "@/types/git";
 
+// ─── P2P diff types ──────────────────────────────────────────────────────────
+
+export interface CommitDiffFile {
+  filepath: string;
+  oldContent: string;
+  newContent: string;
+  changeType: "M" | "A" | "D";
+}
+
+// Minimal interface matching what isomorphic-git passes into git.walk map()
+interface WalkerEntry {
+  oid(): Promise<string>;
+  type(): Promise<"blob" | "tree" | "commit" | "tag">;
+  mode(): Promise<number>;
+  content(): Promise<Uint8Array | void>;
+}
+
+
 // ---------------------------------------------------------------------------
 // File-system & constants
 // ---------------------------------------------------------------------------
@@ -532,6 +550,110 @@ export class GitEngine {
       additions: 0,
       deletions: 0,
     }));
+  }
+
+  // ── getCommitDiff ────────────────────────────────────────────────────────
+  // Returns file-level diff data (old blob + new blob) for a single commit.
+  // Uses isomorphic-git tree walkers to read actual file content from the
+  // object store — no working directory access required.
+
+  async getCommitDiff(
+    repoId: string,
+    sha: string
+  ): Promise<CommitDiffFile[]> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+
+    // Get the commit's parent(s) — limit depth:2 to keep it fast
+    const log = await git.log({ fs, dir, ref: sha, depth: 2 });
+    const parentSha = log[1]?.oid ?? null;
+
+    const decode = async (entry: WalkerEntry | null): Promise<string> => {
+      if (!entry) return "";
+      try {
+        const bytes = await entry.content();
+        if (!bytes) return "";
+        return new TextDecoder().decode(bytes as Uint8Array);
+      } catch {
+        return "";
+      }
+    };
+
+    if (!parentSha) {
+      // Initial commit — every file in the tree is "added"
+      const results: CommitDiffFile[] = [];
+      await git.walk({
+        fs,
+        dir,
+        trees: [git.TREE({ ref: sha })],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        map: async (filepath: string, entries: any[]) => {
+          const entry: WalkerEntry | null = entries[0];
+          if (filepath === ".") return null;
+          const type = await entry?.type();
+          if (type !== "blob") return null;
+          const newContent = await decode(entry);
+          results.push({ filepath, oldContent: "", newContent, changeType: "A" });
+          return null;
+        },
+      });
+      return results;
+    }
+
+    // Normal commit — compare parent tree vs current tree
+    type RawEntry = CommitDiffFile | null;
+    const walked = (await git.walk({
+      fs,
+      dir,
+      trees: [git.TREE({ ref: parentSha }), git.TREE({ ref: sha })],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      map: async (filepath: string, entries: any[]): Promise<RawEntry> => {
+        const parentEntry: WalkerEntry | null = entries[0];
+        const currentEntry: WalkerEntry | null = entries[1];
+        if (filepath === ".") return null;
+
+        const [parentType, currentType] = await Promise.all([
+          parentEntry?.type(),
+          currentEntry?.type(),
+        ]);
+        // Skip directory nodes
+        if (parentType === "tree" || currentType === "tree") return null;
+
+        const [parentOid, currentOid] = await Promise.all([
+          parentEntry?.oid(),
+          currentEntry?.oid(),
+        ]);
+        // Skip unchanged files
+        if (parentOid && currentOid && parentOid === currentOid) return null;
+
+        const [oldContent, newContent] = await Promise.all([
+          decode(parentEntry ?? null),
+          decode(currentEntry ?? null),
+        ]);
+
+        const changeType: "M" | "A" | "D" =
+          !parentEntry ? "A" : !currentEntry ? "D" : "M";
+
+        return { filepath, oldContent, newContent, changeType };
+      },
+    })) as RawEntry[];
+
+    return walked.filter((r): r is CommitDiffFile => r !== null);
+  }
+
+  // ── getRemoteUrl ─────────────────────────────────────────────────────────
+  // Reads the 'remote.origin.url' git config value for a repo.
+  // Returns null if the repo has no remote (locally created repos).
+
+  async getRemoteUrl(repoId: string): Promise<string | null> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    try {
+      const url = await git.getConfig({ fs, dir, path: 'remote.origin.url' });
+      return (url as string | undefined) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async createRepository(

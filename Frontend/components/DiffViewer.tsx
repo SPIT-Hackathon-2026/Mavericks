@@ -21,6 +21,7 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  ActivityIndicator,
 } from 'react-native';
 import {
   FilePlus,
@@ -179,9 +180,10 @@ interface DiffViewerProps {
   files: DiffFile[];
   repoName?: string;
   commitCount?: number;
+  loading?: boolean;
 }
 
-export default function DiffViewer({ files, repoName, commitCount }: DiffViewerProps) {
+export default function DiffViewer({ files, repoName, commitCount, loading }: DiffViewerProps) {
   const totalAdditions = files.reduce((s, f) => s + f.additions, 0);
   const totalDeletions = files.reduce((s, f) => s + f.deletions, 0);
 
@@ -201,17 +203,34 @@ export default function DiffViewer({ files, repoName, commitCount }: DiffViewerP
         </View>
       </View>
 
-      {/* File list */}
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {files.map((file, i) => (
-          <DiffFileCard key={file.filepath + i} file={file} defaultExpanded={i < 3} />
-        ))}
-        <View style={{ height: 20 }} />
-      </ScrollView>
+      {/* Loading overlay */}
+      {loading ? (
+        <View style={styles.emptyState}>
+          <ActivityIndicator color={Colors.accentPrimary} size="large" />
+          <Text style={styles.emptyTitle}>Computing Diffs…</Text>
+          <Text style={styles.emptySubtitle}>Reading file changes from repository</Text>
+        </View>
+      ) : files.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyIcon}>{'∅'}</Text>
+          <Text style={styles.emptyTitle}>No Changes Found</Text>
+          <Text style={styles.emptySubtitle}>
+            {'These commits contain no file changes,\nor the repository is not available locally.'}
+          </Text>
+        </View>
+      ) : (
+        /* File list */
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {files.map((file, i) => (
+            <DiffFileCard key={file.filepath + i} file={file} defaultExpanded={i < 3} />
+          ))}
+          <View style={{ height: 20 }} />
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -221,6 +240,29 @@ export default function DiffViewer({ files, repoName, commitCount }: DiffViewerP
 const styles = StyleSheet.create({
   root: {
     flex: 1,
+  },
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.xl,
+    gap: 10,
+  },
+  emptyIcon: {
+    fontSize: 40,
+    color: Colors.textMuted,
+    marginBottom: 4,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '600' as const,
+    color: Colors.textSecondary,
+  },
+  emptySubtitle: {
+    fontSize: 13,
+    color: Colors.textMuted,
+    textAlign: 'center' as const,
+    lineHeight: 20,
   },
   summaryBar: {
     flexDirection: 'row',

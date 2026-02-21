@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 const TAG = "[GitContext]";
 
 const defaultSettings: AppSettings = {
-  userConfig: { name: "John Doe", email: "john@example.com" },
+  userConfig: { name: "Rachit Chheda", email: "rachit.chheda24@spit.ac.in" },
   notifications: {
     commitSuccess: true,
     commitFailed: true,

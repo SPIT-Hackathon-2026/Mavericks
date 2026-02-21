@@ -46,13 +46,13 @@ import { useGit } from '@/contexts/GitContext';
 import SegmentedControl from '@/components/SegmentedControl';
 import GlowButton from '@/components/GlowButton';
 import DiffViewer from '@/components/DiffViewer';
-import { mockCommits } from '@/mocks/repositories';
+import { gitEngine } from '@/services/git/engine';
 import {
   createSenderSession,
   getSession,
   updateSessionState,
   decodeQRPayload,
-  generateDiffFiles,
+  buildRealDiffFiles,
 } from '@/services/p2p/p2pService';
 import type { P2PSession, QRPayload, DiffFile } from '@/services/p2p/p2pService';
 import type { GitCommit } from '@/types/git';
@@ -268,11 +268,29 @@ export default function TransferScreen() {
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
+  // Commit loading state for send flow
+  const [repoCommits, setRepoCommits] = useState<GitCommit[]>([]);
+  const [isLoadingCommits, setIsLoadingCommits] = useState(false);
+
+  useEffect(() => {
+    if (!selectedRepoId) {
+      setRepoCommits([]);
+      return;
+    }
+    setIsLoadingCommits(true);
+    gitEngine
+      .getCommits(selectedRepoId)
+      .then(setRepoCommits)
+      .catch(() => setRepoCommits([]))
+      .finally(() => setIsLoadingCommits(false));
+  }, [selectedRepoId]);
+
   // Receive state
   const [receiveStep, setReceiveStep] = useState<ReceiveStep>('scanner');
   const [scannedPayload, setScannedPayload] = useState<QRPayload | null>(null);
   const [receivedDiff, setReceivedDiff] = useState<DiffFile[]>([]);
   const [receiveSession, setReceiveSession] = useState<P2PSession | null>(null);
+  const [isComputingDiff, setIsComputingDiff] = useState(false);
 
   const handleModeChange = (idx: number) => {
     setMode(idx);
@@ -287,11 +305,12 @@ export default function TransferScreen() {
       setScannedPayload(null);
       setReceivedDiff([]);
       setReceiveSession(null);
+      setIsComputingDiff(false);
     }
   };
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId);
-  const availableCommits = mockCommits.slice(0, 5);
+  const availableCommits = repoCommits;
 
   const toggleCommit = (sha: string) => {
     haptic(Haptics.ImpactFeedbackStyle.Light);
@@ -307,12 +326,17 @@ export default function TransferScreen() {
     setIsCreatingSession(true);
     haptic();
     try {
-      const commitShas = Array.from(selectedCommits);
+      // If no commits explicitly selected, share all available commits (capped at 20)
+      const commitShas = selectedCommits.size > 0
+        ? Array.from(selectedCommits)
+        : availableCommits.slice(0, 20).map(c => c.sha);
+
       const result = await createSenderSession(
         selectedRepo.id,
         selectedRepo.name,
         settings.userConfig.name,
         commitShas,
+        settings.githubToken,
       );
       setSenderSession(result.session);
       setQrString(result.qrString);
@@ -347,20 +371,38 @@ export default function TransferScreen() {
     setReceiveStep('connecting');
 
     try {
-      let session = await getSession(payload.sessionToken);
-      if (!session) {
-        // Real multi-device: session lives on sender device.
-        // Demo fallback: generate diff locally.
-        const commits = mockCommits.filter(
-          (c) => payload.commits.includes(c.shortSha) || payload.commits.includes(c.sha)
-        );
-        const diff = generateDiffFiles(commits.length > 0 ? commits : mockCommits.slice(0, 3));
-        setReceivedDiff(diff);
-      } else {
+      const session = await getSession(payload.sessionToken);
+
+      // Use session diffs if available and non-empty
+      if (session && session.diffFiles.length > 0) {
         setReceiveSession(session);
         setReceivedDiff(session.diffFiles);
+        setReceiveStep('review-diff');
+        return;
       }
+
+      // Session exists but has empty diffs (failed on sender), or no session at all
+      // (multi-device: session lives on sender). Either way, compute diffs
+      // on the receiver from the commit SHAs embedded in the QR payload.
+      setIsComputingDiff(true);
       setReceiveStep('review-diff');
+      if (session) setReceiveSession(session);
+
+      try {
+        const diffs = await buildRealDiffFiles(
+          payload.repoId,
+          payload.commits,
+          settings.githubToken,
+          payload.githubOwner,   // baked in by sender — receiver uses their own token
+          payload.githubRepo,
+        );
+        setReceivedDiff(diffs);
+      } catch (diffErr) {
+        console.warn('[P2P] receiver diff build failed', diffErr);
+        setReceivedDiff([]);
+      } finally {
+        setIsComputingDiff(false);
+      }
     } catch {
       Alert.alert('Connection Error', 'Could not connect to sender.', [
         { text: 'Retry', onPress: () => setReceiveStep('scanner') },
@@ -458,9 +500,18 @@ export default function TransferScreen() {
               {selectedCommits.size > 0 ? `${selectedCommits.size} selected` : 'tap to select'}
             </Text>
           </View>
-          {availableCommits.map((commit) => (
+          {isLoadingCommits ? (
+            <View style={{ alignItems: 'center', paddingVertical: Spacing.xxl }}>
+              <ActivityIndicator color={Colors.accentPrimary} />
+              <Text style={[styles.sectionHint, { marginTop: 8 }]}>Loading commits…</Text>
+            </View>
+          ) : availableCommits.length === 0 ? (
+            <View style={{ alignItems: 'center', paddingVertical: Spacing.xxl }}>
+              <Text style={styles.sectionHint}>No commits found in this repository.</Text>
+            </View>
+          ) : availableCommits.map((commit, idx) => (
             <CommitRow
-              key={commit.sha}
+              key={`${commit.sha}-${idx}`}
               commit={commit}
               selected={selectedCommits.has(commit.sha) || selectedCommits.has(commit.shortSha)}
               onPress={() => toggleCommit(commit.sha)}
@@ -604,6 +655,7 @@ export default function TransferScreen() {
               files={receivedDiff}
               repoName={scannedPayload?.repoName}
               commitCount={scannedPayload?.commits.length}
+              loading={isComputingDiff}
             />
           </View>
           <View style={styles.reviewActions}>
