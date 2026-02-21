@@ -2,7 +2,6 @@ import Colors from "@/constants/colors";
 import { Tabs } from "expo-router";
 import {
     GitBranch,
-    GitGraph,
     QrCode,
     Settings,
     UserCircle
@@ -59,10 +58,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="graph"
         options={{
-          title: "Graph",
-          tabBarIcon: ({ focused }) => (
-            <TabIcon Icon={GitGraph} focused={focused} />
-          ),
+          href: null,
         }}
       />
       <Tabs.Screen
@@ -92,7 +88,12 @@ export default function TabLayout() {
           ),
         }}
       />
-      {/* Terminal removed from footer; opens within repository view */}
+      <Tabs.Screen
+        name="terminal/index"
+        options={{
+          href: null,
+        }}
+      />
     </Tabs>
   );
 }

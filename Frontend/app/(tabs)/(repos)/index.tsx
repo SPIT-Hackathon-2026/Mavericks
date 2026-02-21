@@ -17,6 +17,7 @@ import {
 } from "lucide-react-native";
 import React, { useCallback, useRef } from "react";
 import {
+    Alert,
     Animated,
     Platform,
     RefreshControl,
@@ -33,9 +34,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 function RepoCard({
   repo,
   onPress,
+  onDelete,
 }: {
   repo: Repository;
   onPress: () => void;
+  onDelete: () => void;
 }) {
   const scale = useRef(new Animated.Value(1)).current;
 
@@ -97,6 +100,17 @@ function RepoCard({
           <TouchableOpacity
             style={styles.menuBtn}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            onPress={(e) => {
+              e.stopPropagation();
+              Alert.alert(
+                'Delete Repository',
+                `Are you sure you want to delete "${repo.name}"? This action cannot be undone.`,
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Delete', style: 'destructive', onPress: onDelete },
+                ],
+              );
+            }}
           >
             <MoreVertical size={18} color={Colors.textMuted} />
           </TouchableOpacity>
@@ -162,6 +176,7 @@ export default function ReposScreen() {
     githubRepos,
     setSelectedRepoId,
     cloneGitHubRepo,
+    deleteRepository,
     settings,
   } = useGit();
   const [refreshing, setRefreshing] = React.useState(false);
@@ -261,6 +276,7 @@ export default function ReposScreen() {
                 key={repo.id}
                 repo={repo}
                 onPress={() => openRepo(repo)}
+                onDelete={() => deleteRepository(repo.id)}
               />
             ))}
           <View style={{ height: 100 }} />
