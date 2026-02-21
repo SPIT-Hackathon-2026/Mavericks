@@ -1,14 +1,14 @@
+import type {
+    ChangeType,
+    FileStatus,
+    GitBranch,
+    GitCommit,
+    GitFile,
+    Repository,
+} from "@/types/git";
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import { expoFS } from "./expo-fs";
-import type {
-  Repository,
-  GitFile,
-  GitCommit,
-  GitBranch,
-  FileStatus,
-  ChangeType,
-} from "@/types/git";
 
 // ─── P2P diff types ──────────────────────────────────────────────────────────
 
@@ -26,7 +26,6 @@ interface WalkerEntry {
   mode(): Promise<number>;
   content(): Promise<Uint8Array | void>;
 }
-
 
 // ---------------------------------------------------------------------------
 // File-system & constants
@@ -75,7 +74,7 @@ async function writeTransactions(dir: string, entries: TransactionEntry[]) {
   await fs.promises.writeFile(
     txFilePath(dir),
     JSON.stringify(entries, null, 2),
-    "utf8"
+    "utf8",
   );
   console.log(TAG, `TX log updated â†’ ${entries.length} entries`);
 }
@@ -142,7 +141,7 @@ function formatTimestamp(timestamp?: number): string {
 function ensureStatus(
   head: number,
   workdir: number,
-  stage: number
+  stage: number,
 ): FileStatus {
   if (head === 0 && workdir === 2 && stage === 0) return "untracked";
   if (workdir === 2 && stage === 2) return "staged";
@@ -154,7 +153,7 @@ function ensureStatus(
 function changeTypeFromStatus(
   head: number,
   workdir: number,
-  stage: number
+  stage: number,
 ): ChangeType | undefined {
   if (head === 0 && workdir === 2) return "A";
   if (head === 1 && workdir === 0 && stage === 0) return "D";
@@ -203,7 +202,7 @@ export class GitEngine {
     url: string,
     name: string,
     onProgress?: (phase: string, loaded: number, total: number) => void,
-    token?: string
+    token?: string,
   ): Promise<Repository> {
     await this.init();
     const safeName = name.trim().replace(/\s+/g, "-");
@@ -254,12 +253,14 @@ export class GitEngine {
     const remotes = await git.listRemotes({ fs, dir });
     if (remotes.length === 0) {
       throw new Error(
-        'No remote configured. Add a remote (e.g. origin) before pushing.'
+        "No remote configured. Add a remote (e.g. origin) before pushing.",
       );
     }
 
     const ref =
-      branch ?? (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+      branch ??
+      (await git.currentBranch({ fs, dir, fullname: false })) ??
+      "main";
     const txId = randomId();
     await appendTx(dir, {
       id: txId,
@@ -291,7 +292,7 @@ export class GitEngine {
     repoId: string,
     token: string,
     branch?: string,
-    author?: { name: string; email: string }
+    author?: { name: string; email: string },
   ): Promise<void> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
@@ -299,12 +300,14 @@ export class GitEngine {
     const remotes = await git.listRemotes({ fs, dir });
     if (remotes.length === 0) {
       throw new Error(
-        'No remote configured. Add a remote (e.g. origin) before pulling.'
+        "No remote configured. Add a remote (e.g. origin) before pulling.",
       );
     }
 
     const ref =
-      branch ?? (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+      branch ??
+      (await git.currentBranch({ fs, dir, fullname: false })) ??
+      "main";
     const txId = randomId();
     await appendTx(dir, {
       id: txId,
@@ -349,7 +352,7 @@ export class GitEngine {
   async addRemote(
     repoId: string,
     remoteName: string,
-    url: string
+    url: string,
   ): Promise<void> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
@@ -364,9 +367,7 @@ export class GitEngine {
     console.log(TAG, `addRemote(${repoId}) -> ${remoteName} = ${url}`);
   }
 
-  async getRemotes(
-    repoId: string
-  ): Promise<{ remote: string; url: string }[]> {
+  async getRemotes(repoId: string): Promise<{ remote: string; url: string }[]> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
     return git.listRemotes({ fs, dir });
@@ -386,8 +387,8 @@ export class GitEngine {
     console.log(
       TAG,
       `listRepositories â€“ scanning ${BASE_DIR}, found: [${entries.join(
-        ", "
-      )}]`
+        ", ",
+      )}]`,
     );
 
     for (const name of entries) {
@@ -403,7 +404,7 @@ export class GitEngine {
         console.warn(
           TAG,
           `listRepositories: buildRepository("${name}") failed`,
-          err
+          err,
         );
       }
     }
@@ -414,7 +415,7 @@ export class GitEngine {
 
   private async buildRepository(
     name: string,
-    dir: string
+    dir: string,
   ): Promise<Repository> {
     let currentBranch: string;
     try {
@@ -451,7 +452,7 @@ export class GitEngine {
             behind: 0,
           };
         }
-      })
+      }),
     );
 
     let statusMatrix: [string, number, number, number][] = [];
@@ -461,13 +462,13 @@ export class GitEngine {
       // Empty repo with no commits can't produce a status matrix
     }
     const stagedCount = statusMatrix.filter(
-      ([, , , stage]) => stage === 2 || stage === 3
+      ([, , , stage]) => stage === 2 || stage === 3,
     ).length;
     const modifiedCount = statusMatrix.filter(
-      ([, , workdir, stage]) => workdir === 2 && stage !== 2
+      ([, , workdir, stage]) => workdir === 2 && stage !== 2,
     ).length;
     const conflictCount = statusMatrix.filter(
-      ([, , , stage]) => stage === 3
+      ([, , , stage]) => stage === 3,
     ).length;
 
     let latestCommit: Awaited<ReturnType<typeof git.log>>[0] | undefined;
@@ -483,7 +484,7 @@ export class GitEngine {
 
     console.log(
       TAG,
-      `buildRepo(${name}) â€“ branch=${currentBranch} commits=${commitCount} staged=${stagedCount} modified=${modifiedCount}`
+      `buildRepo(${name}) â€“ branch=${currentBranch} commits=${commitCount} staged=${stagedCount} modified=${modifiedCount}`,
     );
 
     return {
@@ -508,7 +509,7 @@ export class GitEngine {
     const statusMatrix = await git.statusMatrix({ fs, dir });
     const tracked = await git.listFiles({ fs, dir });
     const all = Array.from(
-      new Set([...tracked, ...statusMatrix.map(([filepath]) => filepath)])
+      new Set([...tracked, ...statusMatrix.map(([filepath]) => filepath)]),
     );
 
     const tree: GitFile[] = [];
@@ -614,10 +615,7 @@ export class GitEngine {
   // Uses isomorphic-git tree walkers to read actual file content from the
   // object store — no working directory access required.
 
-  async getCommitDiff(
-    repoId: string,
-    sha: string
-  ): Promise<CommitDiffFile[]> {
+  async getCommitDiff(repoId: string, sha: string): Promise<CommitDiffFile[]> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
 
@@ -650,7 +648,12 @@ export class GitEngine {
           const type = await entry?.type();
           if (type !== "blob") return null;
           const newContent = await decode(entry);
-          results.push({ filepath, oldContent: "", newContent, changeType: "A" });
+          results.push({
+            filepath,
+            oldContent: "",
+            newContent,
+            changeType: "A",
+          });
           return null;
         },
       });
@@ -688,8 +691,11 @@ export class GitEngine {
           decode(currentEntry ?? null),
         ]);
 
-        const changeType: "M" | "A" | "D" =
-          !parentEntry ? "A" : !currentEntry ? "D" : "M";
+        const changeType: "M" | "A" | "D" = !parentEntry
+          ? "A"
+          : !currentEntry
+            ? "D"
+            : "M";
 
         return { filepath, oldContent, newContent, changeType };
       },
@@ -706,7 +712,7 @@ export class GitEngine {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
     try {
-      const url = await git.getConfig({ fs, dir, path: 'remote.origin.url' });
+      const url = await git.getConfig({ fs, dir, path: "remote.origin.url" });
       return (url as string | undefined) ?? null;
     } catch {
       return null;
@@ -715,7 +721,7 @@ export class GitEngine {
 
   async createRepository(
     name: string,
-    addReadme: boolean
+    addReadme: boolean,
   ): Promise<Repository> {
     await this.init();
     const safeName = name.trim().replace(/\s+/g, "-");
@@ -747,7 +753,9 @@ export class GitEngine {
       console.log(TAG, `deleteRepository(${id}) → removed successfully`);
     } catch (err) {
       console.error(TAG, `deleteRepository(${id}) → removeDir failed`, err);
-      throw new Error(`Failed to delete repository "${id}": ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(
+        `Failed to delete repository "${id}": ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -764,13 +772,58 @@ export class GitEngine {
     console.log(TAG, `unstage ${filepath} in ${repoId}`);
     await git.resetIndex({ fs, dir, filepath });
   }
+  // ── Create / Delete files ─────────────────────────────────────────────────
 
+  async createFile(repoId: string, filepath: string, content: string = ''): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+
+    // Ensure parent directories exist
+    const segments = filepath.split('/');
+    if (segments.length > 1) {
+      const parentDir = joinPath(dir, ...segments.slice(0, -1));
+      await ensureDirDeep(parentDir);
+    }
+
+    await fs.promises.writeFile(fullPath, content, 'utf8');
+    await deleteGitCache(dir);
+    console.log(TAG, `createFile(${repoId}) → ${filepath}`);
+  }
+
+  async deleteFile(repoId: string, filepath: string): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+
+    // Remove from git index first
+    try {
+      await git.remove({ fs, dir, filepath });
+    } catch {
+      // Not tracked — that's fine
+    }
+
+    // Remove from filesystem
+    try {
+      const stat = await fs.promises.stat(fullPath);
+      if (stat.type === 'dir') {
+        await removeDir(fullPath);
+      } else {
+        await fs.promises.unlink(fullPath);
+      }
+    } catch {
+      // File might already be gone
+    }
+
+    await deleteGitCache(dir);
+    console.log(TAG, `deleteFile(${repoId}) → ${filepath}`);
+  }
   // â”€â”€ Commit (TX-wrapped + 3 s test delay) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async commit(
     repoId: string,
     message: string,
-    author: { name: string; email: string }
+    author: { name: string; email: string },
   ) {
     const dir = this.resolveRepoDir(repoId);
     const txId = randomId();
@@ -791,7 +844,7 @@ export class GitEngine {
       // â±  3-second intentional delay â€” kill app in this window to test recovery
       console.log(
         TAG,
-        `commit succeeded â€“ 3 s delay before COMPLETED (test crash-recovery)â€¦`
+        `commit succeeded â€“ 3 s delay before COMPLETED (test crash-recovery)â€¦`,
       );
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
@@ -845,7 +898,7 @@ export class GitEngine {
   async merge(
     repoId: string,
     theirBranch: string,
-    author: { name: string; email: string }
+    author: { name: string; email: string },
   ) {
     const dir = this.resolveRepoDir(repoId);
     const txId = randomId();
@@ -910,7 +963,7 @@ export class GitEngine {
           const updated = txList.map((e) =>
             e.status === "PENDING" && now - e.startedAt > STALE_MS
               ? { ...e, status: "FAILED" as const, completedAt: now }
-              : e
+              : e,
           );
           await writeTransactions(dir, updated);
           const remaining = updated.filter((e) => e.status === "PENDING");
@@ -918,7 +971,7 @@ export class GitEngine {
             console.warn(
               TAG,
               `\u26A0 PENDING transactions in ${name}:`,
-              remaining.map((p) => `${p.type}(${p.id})`).join(", ")
+              remaining.map((p) => `${p.type}(${p.id})`).join(", "),
             );
             results.push({ repoId: name, dir, entries: remaining });
           } else {
@@ -928,7 +981,7 @@ export class GitEngine {
           console.warn(
             TAG,
             `\u26A0 PENDING transactions in ${name}:`,
-            pending.map((p) => `${p.type}(${p.id})`).join(", ")
+            pending.map((p) => `${p.type}(${p.id})`).join(", "),
           );
           results.push({ repoId: name, dir, entries: pending });
         }

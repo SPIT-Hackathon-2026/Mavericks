@@ -1,8 +1,8 @@
 import { mockConflicts } from "@/mocks/repositories";
 import { gitEngine } from "@/services/git/engine";
 import { listUserRepos } from "@/services/github/api";
-import { storage } from "@/services/storage/storage";
 import { profileCache } from "@/services/storage/profileCache";
+import { storage } from "@/services/storage/storage";
 import { pushQueue } from "@/services/sync/pushQueue";
 import { AppSettings, ConflictFile, GitHubRepo } from "@/types/git";
 import createContextHook from "@nkzw/create-context-hook";
@@ -205,6 +205,28 @@ export const [GitProvider, useGit] = createContextHook(() => {
     [selectedRepoId, queryClient],
   );
 
+  const createFile = useCallback(
+    async (filepath: string, content: string = '') => {
+      if (!selectedRepoId) return;
+      await gitEngine.createFile(selectedRepoId, filepath, content);
+      await queryClient.refetchQueries({ queryKey: ['files', selectedRepoId] });
+      await queryClient.refetchQueries({ queryKey: ['repositories'] });
+      showToast('success', `Created ${filepath}`);
+    },
+    [selectedRepoId, queryClient],
+  );
+
+  const deleteFile = useCallback(
+    async (filepath: string) => {
+      if (!selectedRepoId) return;
+      await gitEngine.deleteFile(selectedRepoId, filepath);
+      await queryClient.refetchQueries({ queryKey: ['files', selectedRepoId] });
+      await queryClient.refetchQueries({ queryKey: ['repositories'] });
+      showToast('warning', `Deleted ${filepath}`);
+    },
+    [selectedRepoId, queryClient],
+  );
+
   const commitChanges = useCallback(
     async (message: string) => {
       if (!selectedRepo) return;
@@ -218,7 +240,7 @@ export const [GitProvider, useGit] = createContextHook(() => {
       await storage.deleteCache(selectedRepo.path);
       // Track offline commit for profile graph
       const today = new Date();
-      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
       await profileCache.addOfflineCommit({
         repoName: selectedRepo.name,
         date: dateStr,
@@ -228,7 +250,7 @@ export const [GitProvider, useGit] = createContextHook(() => {
       queryClient.invalidateQueries({ queryKey: ["repositories"] });
       queryClient.invalidateQueries({ queryKey: ["files", selectedRepo.id] });
       queryClient.invalidateQueries({ queryKey: ["commits", selectedRepo.id] });
-      showToast("success", `Committed: "${message}"`);  
+      showToast("success", `Committed: "${message}"`);
     },
     [
       selectedRepo,
@@ -275,63 +297,84 @@ export const [GitProvider, useGit] = createContextHook(() => {
     [cloneRepository],
   );
 
-  const pushSelectedRepo = useCallback(async (branch?: string) => {
-    if (!selectedRepo) return;
-    if (!settings.githubToken) {
-      showToast("warning", "GitHub token not set");
-      return;
-    }
+  const pushSelectedRepo = useCallback(
+    async (branch?: string) => {
+      if (!selectedRepo) return;
+      if (!settings.githubToken) {
+        showToast("warning", "GitHub token not set");
+        return;
+      }
 
-    const targetBranch = branch ?? selectedRepo.currentBranch ?? 'main';
+      const targetBranch = branch ?? selectedRepo.currentBranch ?? "main";
 
-    // Check connectivity first
-    const online = await pushQueue.isOnline();
-    if (!online) {
-      // Queue the push for later
-      await pushQueue.enqueue(selectedRepo.id, selectedRepo.name, targetBranch);
-      return; // toast shown by queue subscriber
-    }
+      // Check connectivity first
+      const online = await pushQueue.isOnline();
+      if (!online) {
+        // Queue the push for later
+        await pushQueue.enqueue(
+          selectedRepo.id,
+          selectedRepo.name,
+          targetBranch,
+        );
+        return; // toast shown by queue subscriber
+      }
 
-    try {
-      await gitEngine.push(selectedRepo.id, settings.githubToken, targetBranch);
-      showToast("success", `Pushed to origin/${targetBranch}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Push failed";
-      showToast("error", message);
-    }
-  }, [selectedRepo, settings.githubToken]);
+      try {
+        await gitEngine.push(
+          selectedRepo.id,
+          settings.githubToken,
+          targetBranch,
+        );
+        showToast("success", `Pushed to origin/${targetBranch}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Push failed";
+        showToast("error", message);
+      }
+    },
+    [selectedRepo, settings.githubToken],
+  );
 
-  const pullSelectedRepo = useCallback(async (branch?: string) => {
-    if (!selectedRepo) return;
-    if (!settings.githubToken) {
-      showToast("warning", "GitHub token not set");
-      return;
-    }
+  const pullSelectedRepo = useCallback(
+    async (branch?: string) => {
+      if (!selectedRepo) return;
+      if (!settings.githubToken) {
+        showToast("warning", "GitHub token not set");
+        return;
+      }
 
-    const targetBranch = branch ?? selectedRepo.currentBranch ?? 'main';
+      const targetBranch = branch ?? selectedRepo.currentBranch ?? "main";
 
-    const online = await pushQueue.isOnline();
-    if (!online) {
-      showToast("warning", "Cannot pull while offline");
-      return;
-    }
+      const online = await pushQueue.isOnline();
+      if (!online) {
+        showToast("warning", "Cannot pull while offline");
+        return;
+      }
 
-    try {
-      const author = {
-        name: settings.userConfig.name,
-        email: settings.userConfig.email,
-      };
-      await gitEngine.pull(selectedRepo.id, settings.githubToken, targetBranch, author);
-      await storage.deleteCache(selectedRepo.path);
-      queryClient.invalidateQueries({ queryKey: ["repositories"] });
-      queryClient.invalidateQueries({ queryKey: ["files", selectedRepo.id] });
-      queryClient.invalidateQueries({ queryKey: ["commits", selectedRepo.id] });
-      showToast("success", `Pulled from origin/${targetBranch}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Pull failed";
-      showToast("error", message);
-    }
-  }, [selectedRepo, settings.githubToken, settings.userConfig, queryClient]);
+      try {
+        const author = {
+          name: settings.userConfig.name,
+          email: settings.userConfig.email,
+        };
+        await gitEngine.pull(
+          selectedRepo.id,
+          settings.githubToken,
+          targetBranch,
+          author,
+        );
+        await storage.deleteCache(selectedRepo.path);
+        queryClient.invalidateQueries({ queryKey: ["repositories"] });
+        queryClient.invalidateQueries({ queryKey: ["files", selectedRepo.id] });
+        queryClient.invalidateQueries({
+          queryKey: ["commits", selectedRepo.id],
+        });
+        showToast("success", `Pulled from origin/${targetBranch}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Pull failed";
+        showToast("error", message);
+      }
+    },
+    [selectedRepo, settings.githubToken, settings.userConfig, queryClient],
+  );
 
   const addRemote = useCallback(
     async (repoId: string, remoteName: string, url: string) => {
@@ -341,12 +384,9 @@ export const [GitProvider, useGit] = createContextHook(() => {
     [],
   );
 
-  const getRemotes = useCallback(
-    async (repoId: string) => {
-      return gitEngine.getRemotes(repoId);
-    },
-    [],
-  );
+  const getRemotes = useCallback(async (repoId: string) => {
+    return gitEngine.getRemotes(repoId);
+  }, []);
 
   const mergeInto = useCallback(
     async (repoId: string, theirBranch: string) => {
@@ -403,28 +443,28 @@ export const [GitProvider, useGit] = createContextHook(() => {
 
     const unsub = pushQueue.subscribe((event) => {
       switch (event.type) {
-        case 'queued':
-          showToastRef.current('info', event.message);
+        case "queued":
+          showToastRef.current("info", event.message);
           break;
-        case 'drain-start':
-          showToastRef.current('info', event.message);
+        case "drain-start":
+          showToastRef.current("info", event.message);
           break;
-        case 'syncing':
-          showToastRef.current('info', event.message);
+        case "syncing":
+          showToastRef.current("info", event.message);
           break;
-        case 'success':
-          showToastRef.current('success', event.message);
-          queryClient.invalidateQueries({ queryKey: ['repositories'] });
+        case "success":
+          showToastRef.current("success", event.message);
+          queryClient.invalidateQueries({ queryKey: ["repositories"] });
           break;
-        case 'failed':
-          showToastRef.current('error', event.message);
+        case "failed":
+          showToastRef.current("error", event.message);
           break;
-        case 'drain-end':
+        case "drain-end":
           showToastRef.current(
-            event.remaining === 0 ? 'success' : 'warning',
+            event.remaining === 0 ? "success" : "warning",
             event.message,
           );
-          queryClient.invalidateQueries({ queryKey: ['repositories'] });
+          queryClient.invalidateQueries({ queryKey: ["repositories"] });
           break;
       }
     });
@@ -459,6 +499,8 @@ export const [GitProvider, useGit] = createContextHook(() => {
     createBranch,
     stageFile,
     unstageFile,
+    createFile,
+    deleteFile,
     commitChanges,
     resolveConflict,
     toastMessage,
