@@ -52,3 +52,7 @@
 - [ ] Prepare UI walkthrough showing merge, branch graph, staging, transfer features
 - [ ] Record short demo of offline repo creation, merging with conflict resolution, and transfer
 - [ ] Draft hackathon pitch highlighting how GitLane meets all Problem Statement requirements
+
+
+## Important 
+- [ ] Seeding Data: Have a zip file or a "Demo Repo" ready to import instantly. Judges hate waiting for a 100MB clone during a 3-minute pitch.
