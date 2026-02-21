@@ -231,6 +231,15 @@ export class GitEngine {
   async push(repoId: string, token: string): Promise<void> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
+
+    // Check that a remote exists before attempting push
+    const remotes = await git.listRemotes({ fs, dir });
+    if (remotes.length === 0) {
+      throw new Error(
+        'No remote configured. Add a remote (e.g. origin) before pushing.'
+      );
+    }
+
     const ref =
       (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
     const txId = randomId();
@@ -252,15 +261,43 @@ export class GitEngine {
       });
       await completeTx(dir, txId);
       await deleteGitCache(dir);
-      console.log(TAG, `push COMPLETE â†’ ${repoId} (${ref})`);
+      console.log(TAG, `push COMPLETE -> ${repoId} (${ref})`);
     } catch (err) {
       await failTx(dir, txId);
-      console.error(TAG, `push FAILED â†’ ${repoId}`, err);
+      console.error(TAG, `push FAILED -> ${repoId}`, err);
       throw err;
     }
   }
 
-  // â”€â”€ List â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // -- Remotes --------------------------------------------------------
+
+  async addRemote(
+    repoId: string,
+    remoteName: string,
+    url: string
+  ): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+
+    // Remove existing remote with same name (if any) before adding
+    const existing = await git.listRemotes({ fs, dir });
+    if (existing.some((r) => r.remote === remoteName)) {
+      await git.deleteRemote({ fs, dir, remote: remoteName });
+    }
+
+    await git.addRemote({ fs, dir, remote: remoteName, url });
+    console.log(TAG, `addRemote(${repoId}) -> ${remoteName} = ${url}`);
+  }
+
+  async getRemotes(
+    repoId: string
+  ): Promise<{ remote: string; url: string }[]> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    return git.listRemotes({ fs, dir });
+  }
+
+  // -- List -----------------------------------------------------------
   async listRepositories(): Promise<Repository[]> {
     await this.init();
     let entries: string[] = [];

@@ -1,14 +1,14 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Animated,
-  TouchableWithoutFeedback, TextInput, Platform,
+  TouchableWithoutFeedback, TextInput, Platform, Alert, Modal,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft, GitBranch, MoreVertical, Folder, FileCode2, FileText,
   FileJson, File, ChevronRight, Clock, Square, CheckSquare,
-  Send, ChevronDown, Plus, Trash2, GitCommit,
+  Send, ChevronDown, Plus, Trash2, GitCommit, Link,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
@@ -121,6 +121,7 @@ export default function RepositoryDetail() {
   const {
     repositories, files, commits, selectedRepo, commitChanges, setSelectedRepoId,
     switchBranch, createBranch, stageFile, unstageFile, pushSelectedRepo,
+    addRemote, getRemotes, showToast,
   } = useGit();
 
   const repo = repositories.find(r => r.id === id);
@@ -197,6 +198,48 @@ export default function RepositoryDetail() {
     setStagedFileIds(new Set());
   }, [stagedFiles.length, commitMessage, commitChanges]);
 
+  const [showRemoteModal, setShowRemoteModal] = useState(false);
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [currentOriginUrl, setCurrentOriginUrl] = useState<string | null>(null);
+
+  const handleSetRemote = useCallback(async () => {
+    if (!repo) return;
+    // Check current remotes
+    let currentRemotes: { remote: string; url: string }[] = [];
+    try {
+      currentRemotes = await getRemotes(repo.id);
+    } catch {}
+    const currentOrigin = currentRemotes.find(r => r.remote === 'origin');
+    setCurrentOriginUrl(currentOrigin?.url ?? null);
+    setRemoteUrl(currentOrigin?.url ?? '');
+    setShowRemoteModal(true);
+  }, [repo, getRemotes]);
+
+  const saveRemote = useCallback(async () => {
+    if (!repo || !remoteUrl.trim()) return;
+    try {
+      await addRemote(repo.id, 'origin', remoteUrl.trim());
+      setShowRemoteModal(false);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to set remote';
+      showToast('error', msg);
+    }
+  }, [repo, remoteUrl, addRemote, showToast]);
+
+  const handleMenuPress = useCallback(() => {
+    Alert.alert(
+      repo?.name ?? 'Repository',
+      undefined,
+      [
+        {
+          text: 'Set Remote (origin)',
+          onPress: handleSetRemote,
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
+  }, [repo, handleSetRemote]);
+
   if (!repo) {
     return (
       <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -236,7 +279,7 @@ export default function RepositoryDetail() {
             <Send size={16} color={Colors.accentPrimary} />
             <Text style={styles.pushText}>Push</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.menuBtn}>
+          <TouchableOpacity style={styles.menuBtn} onPress={handleMenuPress}>
             <MoreVertical size={20} color={Colors.textSecondary} />
           </TouchableOpacity>
         </View>
@@ -438,6 +481,49 @@ export default function RepositoryDetail() {
           <TerminalPanel />
         </View>
       )}
+
+      {/* Set Remote Modal */}
+      <Modal
+        visible={showRemoteModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowRemoteModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Set Remote (origin)</Text>
+            {currentOriginUrl && (
+              <Text style={styles.modalSubtitle}>Current: {currentOriginUrl}</Text>
+            )}
+            <TextInput
+              style={styles.modalInput}
+              placeholder="https://github.com/user/repo.git"
+              placeholderTextColor={Colors.textMuted}
+              value={remoteUrl}
+              onChangeText={setRemoteUrl}
+              autoCapitalize="none"
+              autoCorrect={false}
+              selectTextOnFocus
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setShowRemoteModal(false)}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalSaveBtn, !remoteUrl.trim() && { opacity: 0.4 }]}
+                onPress={saveRemote}
+                disabled={!remoteUrl.trim()}
+              >
+                <Link size={14} color="#fff" />
+                <Text style={styles.modalSaveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -917,4 +1003,39 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   terminalRunText: { color: '#fff', fontWeight: '600' as const, fontSize: 12 },
+  modalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center', alignItems: 'center', padding: Spacing.lg,
+  },
+  modalCard: {
+    width: '100%', maxWidth: 400, backgroundColor: Colors.bgSecondary,
+    borderRadius: Radius.lg, padding: Spacing.lg,
+    borderWidth: 1, borderColor: Colors.borderDefault,
+  },
+  modalTitle: {
+    fontSize: 16, fontWeight: '700', color: Colors.textPrimary, marginBottom: 4,
+  },
+  modalSubtitle: {
+    fontSize: 12, color: Colors.textMuted, marginBottom: Spacing.sm,
+  },
+  modalInput: {
+    backgroundColor: Colors.bgTertiary, borderRadius: Radius.sm,
+    paddingHorizontal: 12, paddingVertical: 10, fontSize: 14,
+    color: Colors.textPrimary, borderWidth: 1, borderColor: Colors.borderDefault,
+    marginTop: Spacing.sm, marginBottom: Spacing.md,
+  },
+  modalActions: {
+    flexDirection: 'row' as const, justifyContent: 'flex-end', gap: 8,
+  },
+  modalCancelBtn: {
+    paddingHorizontal: 16, paddingVertical: 8, borderRadius: Radius.sm,
+    borderWidth: 1, borderColor: Colors.borderDefault,
+  },
+  modalCancelText: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500' as const },
+  modalSaveBtn: {
+    flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6,
+    backgroundColor: Colors.accentPrimary, borderRadius: Radius.sm,
+    paddingHorizontal: 16, paddingVertical: 8,
+  },
+  modalSaveText: { fontSize: 13, color: '#fff', fontWeight: '600' as const },
 });

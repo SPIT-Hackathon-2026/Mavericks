@@ -280,9 +280,29 @@ export const [GitProvider, useGit] = createContextHook(() => {
       showToast("warning", "GitHub token not set");
       return;
     }
-    await gitEngine.push(selectedRepo.id, settings.githubToken);
-    showToast("success", "Pushed to origin");
+    try {
+      await gitEngine.push(selectedRepo.id, settings.githubToken);
+      showToast("success", "Pushed to origin");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Push failed";
+      showToast("error", message);
+    }
   }, [selectedRepo, settings.githubToken]);
+
+  const addRemote = useCallback(
+    async (repoId: string, remoteName: string, url: string) => {
+      await gitEngine.addRemote(repoId, remoteName, url);
+      showToast("success", `Remote "${remoteName}" set to ${url}`);
+    },
+    [],
+  );
+
+  const getRemotes = useCallback(
+    async (repoId: string) => {
+      return gitEngine.getRemotes(repoId);
+    },
+    [],
+  );
 
   const mergeInto = useCallback(
     async (repoId: string, theirBranch: string) => {
@@ -346,6 +366,8 @@ export const [GitProvider, useGit] = createContextHook(() => {
     cloneRepository,
     cloneGitHubRepo,
     pushSelectedRepo,
+    addRemote,
+    getRemotes,
     mergeInto,
     switchBranch,
     createBranch,
