@@ -1,3 +1,9 @@
+// Polyfill Buffer for isomorphic-git on Hermes
+import { Buffer } from "buffer";
+if (typeof globalThis.Buffer === "undefined") {
+  globalThis.Buffer = Buffer as unknown as typeof globalThis.Buffer;
+}
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -6,6 +12,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { GitProvider, useGit } from "@/contexts/GitContext";
 import Toast from "@/components/Toast";
+import RecoveryAlert from "@/components/RecoveryAlert";
 import Colors from "@/constants/colors";
 
 SplashScreen.preventAutoHideAsync();
@@ -39,6 +46,7 @@ function RootLayoutNav() {
         <Stack.Screen name="merge-conflicts" options={{ presentation: "modal", headerShown: false }} />
       </Stack>
       <ToastOverlay />
+      <RecoveryAlert />
     </>
   );
 }
