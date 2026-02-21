@@ -2,6 +2,7 @@ import { mockConflicts } from "@/mocks/repositories";
 import { gitEngine } from "@/services/git/engine";
 import { listUserRepos } from "@/services/github/api";
 import { storage } from "@/services/storage/storage";
+import { profileCache } from "@/services/storage/profileCache";
 import { AppSettings, ConflictFile, GitHubRepo } from "@/types/git";
 import createContextHook from "@nkzw/create-context-hook";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -208,10 +209,19 @@ export const [GitProvider, useGit] = createContextHook(() => {
       await gitEngine.commit(selectedRepo.id, message, author);
       // Automatic cache invalidation
       await storage.deleteCache(selectedRepo.path);
+      // Track offline commit for profile graph
+      const today = new Date();
+      const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      await profileCache.addOfflineCommit({
+        repoName: selectedRepo.name,
+        date: dateStr,
+        message,
+        timestamp: Date.now(),
+      });
       queryClient.invalidateQueries({ queryKey: ["repositories"] });
       queryClient.invalidateQueries({ queryKey: ["files", selectedRepo.id] });
       queryClient.invalidateQueries({ queryKey: ["commits", selectedRepo.id] });
-      showToast("success", `Committed: "${message}"`);
+      showToast("success", `Committed: "${message}"`);  
     },
     [
       selectedRepo,
