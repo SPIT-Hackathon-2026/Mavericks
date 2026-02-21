@@ -7,7 +7,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   GitBranch, Plus, FolderGit2, FileWarning, FolderX,
-  MoreVertical, Clock,
+  MoreVertical, Clock, MessageCircle,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
@@ -110,6 +110,13 @@ export default function ReposScreen() {
     router.push('/add-repo');
   }, [router]);
 
+  const openChatbot = useCallback(() => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    router.push('/chatbot');
+  }, [router]);
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
@@ -156,11 +163,11 @@ export default function ReposScreen() {
 
       <TouchableOpacity
         style={[styles.fab, Shadows.glow, { bottom: Spacing.lg }]}
-        onPress={openAddRepo}
+        onPress={openChatbot}
         activeOpacity={0.8}
-        testID="fab-add-repo"
+        testID="fab-chatbot"
       >
-        <Plus size={24} color="#FFFFFF" />
+        <MessageCircle size={24} color="#FFFFFF" />
       </TouchableOpacity>
     </View>
   );
