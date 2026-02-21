@@ -1,76 +1,88 @@
-import React, { useState, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  TextInput, Platform, Animated, Dimensions,
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  TextInput,
+  Platform,
+  Animated,
+  Dimensions,
   KeyboardAvoidingView,
-} from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+} from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
-  ArrowLeft, Eye, Edit3, Copy, Check, GitCommit,
-  FolderTree, ChevronRight, ChevronDown, Folder,
-  FileCode2, FileText, FileJson, File as FileIcon, X, Send,
-  FolderOpen, Circle,
-} from 'lucide-react-native';
-import * as Clipboard from 'expo-clipboard';
-import * as Haptics from 'expo-haptics';
-import Colors from '@/constants/colors';
-import { Spacing, Radius, Shadows } from '@/constants/theme';
-import { useGit } from '@/contexts/GitContext';
-import { mockFiles } from '@/mocks/repositories';
-import type { GitFile } from '@/types/git';
+  ArrowLeft,
+  Eye,
+  Edit3,
+  Copy,
+  Check,
+  GitCommit,
+  FolderTree,
+  ChevronRight,
+  ChevronDown,
+  Folder,
+  FileCode2,
+  FileText,
+  FileJson,
+  File as FileIcon,
+  X,
+  Send,
+  FolderOpen,
+  Circle,
+} from "lucide-react-native";
+import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
+import Colors from "@/constants/colors";
+import { Spacing, Radius, Shadows } from "@/constants/theme";
+import { useGit } from "@/contexts/GitContext";
+import type { GitFile } from "@/types/git";
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
+const SCREEN_WIDTH = Dimensions.get("window").width;
 const TREE_PANEL_WIDTH = SCREEN_WIDTH * 0.78;
 
 // ─── file icon helpers ───────────────────────────────────────────────────────
 
 const fileIconMap: Record<string, { Icon: typeof FileCode2; color: string }> = {
-  tsx:  { Icon: FileCode2, color: '#61AFEF' },
-  ts:   { Icon: FileCode2, color: '#61AFEF' },
-  js:   { Icon: FileCode2, color: '#EAB308' },
-  jsx:  { Icon: FileCode2, color: '#EAB308' },
-  json: { Icon: FileJson,  color: '#F97316' },
-  md:   { Icon: FileText,  color: '#A3A3A3' },
-  css:  { Icon: FileCode2, color: '#A855F7' },
-  html: { Icon: FileCode2, color: '#EF4444' },
-  py:   { Icon: FileCode2, color: '#22C55E' },
-  rs:   { Icon: FileCode2, color: '#F97316' },
+  tsx: { Icon: FileCode2, color: "#61AFEF" },
+  ts: { Icon: FileCode2, color: "#61AFEF" },
+  js: { Icon: FileCode2, color: "#EAB308" },
+  jsx: { Icon: FileCode2, color: "#EAB308" },
+  json: { Icon: FileJson, color: "#F97316" },
+  md: { Icon: FileText, color: "#A3A3A3" },
+  css: { Icon: FileCode2, color: "#A855F7" },
+  html: { Icon: FileCode2, color: "#EF4444" },
+  py: { Icon: FileCode2, color: "#22C55E" },
+  rs: { Icon: FileCode2, color: "#F97316" },
 };
 
-  const handleCreate = useCallback(async () => {
-    if (!isValid || creating) return;
-    setCreating(true);
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
-
-    try {
-      await addRepository({ name: name.trim(), addReadme });
-      if (Platform.OS !== 'web') {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      }
-      router.dismiss();
-    } finally {
-      setCreating(false);
-    }
-  }, [isValid, creating, addRepository, name, addReadme, router]);
 function getFileIcon(ext?: string) {
-  return fileIconMap[ext ?? ''] ?? { Icon: FileIcon, color: '#A3A3A3' };
+  return fileIconMap[ext ?? ""] ?? { Icon: FileIcon, color: "#A3A3A3" };
 }
 
 // ─── basic token coloring ────────────────────────────────────────────────────
 
 function getLineColor(line: string): string {
   const t = line.trimStart();
-  if (t.startsWith('//') || t.startsWith('#') || t.startsWith('/*') || t.startsWith('*'))
-    return '#6A9955';
-  if (/^(import|export)\s/.test(t))  return '#C678DD';
-  if (/^(const|let|var|function|return|interface|type|class|enum|async|if|else|for|while)\b/.test(t))
-    return '#61AFEF';
-  if (/^\s*"[^"]+"\s*:/.test(line)) return '#E5C07B';
-  if (t.startsWith('"') || t.startsWith("'") || t.startsWith('`'))
-    return '#98C379';
+  if (
+    t.startsWith("//") ||
+    t.startsWith("#") ||
+    t.startsWith("/*") ||
+    t.startsWith("*")
+  )
+    return "#6A9955";
+  if (/^(import|export)\s/.test(t)) return "#C678DD";
+  if (
+    /^(const|let|var|function|return|interface|type|class|enum|async|if|else|for|while)\b/.test(
+      t
+    )
+  )
+    return "#61AFEF";
+  if (/^\s*"[^"]+"\s*:/.test(line)) return "#E5C07B";
+  if (t.startsWith('"') || t.startsWith("'") || t.startsWith("`"))
+    return "#98C379";
   return Colors.textPrimary;
 }
 
@@ -86,51 +98,75 @@ interface TreeNodeProps {
 }
 
 function TreeNode({
-  file, depth, currentFilePath, onSelectFile, expandedDirs, onToggleDir,
+  file,
+  depth,
+  currentFilePath,
+  onSelectFile,
+  expandedDirs,
+  onToggleDir,
 }: TreeNodeProps) {
   const isExpanded = expandedDirs.has(file.id);
-  const isActive   = !file.isDirectory && file.path === currentFilePath;
+  const isActive = !file.isDirectory && file.path === currentFilePath;
   const { Icon, color } = file.isDirectory
     ? { Icon: isExpanded ? FolderOpen : Folder, color: Colors.accentWarning }
     : getFileIcon(file.extension);
 
   const statusColor =
-    file.status === 'modified'  ? Colors.statusModified  :
-    file.status === 'staged'    ? Colors.statusStaged    :
-    file.status === 'untracked' ? Colors.accentInfo      : null;
+    file.status === "modified"
+      ? Colors.statusModified
+      : file.status === "staged"
+      ? Colors.statusStaged
+      : file.status === "untracked"
+      ? Colors.accentInfo
+      : null;
 
   return (
     <>
       <TouchableOpacity
-        style={[treeStyles.node, { paddingLeft: Spacing.sm + depth * 14 }, isActive && treeStyles.nodeActive]}
-        onPress={() => file.isDirectory ? onToggleDir(file.id) : onSelectFile(file)}
+        style={[
+          treeStyles.node,
+          { paddingLeft: Spacing.sm + depth * 14 },
+          isActive && treeStyles.nodeActive,
+        ]}
+        onPress={() =>
+          file.isDirectory ? onToggleDir(file.id) : onSelectFile(file)
+        }
         activeOpacity={0.6}
       >
         <View style={treeStyles.dirArrow}>
-          {file.isDirectory
-            ? (isExpanded
-                ? <ChevronDown size={12} color={Colors.textMuted} />
-                : <ChevronRight size={12} color={Colors.textMuted} />)
-            : null}
+          {file.isDirectory ? (
+            isExpanded ? (
+              <ChevronDown size={12} color={Colors.textMuted} />
+            ) : (
+              <ChevronRight size={12} color={Colors.textMuted} />
+            )
+          ) : null}
         </View>
         <Icon size={16} color={isActive ? Colors.accentPrimary : color} />
-        <Text style={[treeStyles.nodeName, isActive && treeStyles.nodeNameActive]} numberOfLines={1}>
+        <Text
+          style={[treeStyles.nodeName, isActive && treeStyles.nodeNameActive]}
+          numberOfLines={1}
+        >
           {file.name}
         </Text>
-        {statusColor && <Circle size={6} color={statusColor} fill={statusColor} />}
+        {statusColor && (
+          <Circle size={6} color={statusColor} fill={statusColor} />
+        )}
       </TouchableOpacity>
 
-      {file.isDirectory && isExpanded && file.children?.map(child => (
-        <TreeNode
-          key={child.id}
-          file={child}
-          depth={depth + 1}
-          currentFilePath={currentFilePath}
-          onSelectFile={onSelectFile}
-          expandedDirs={expandedDirs}
-          onToggleDir={onToggleDir}
-        />
-      ))}
+      {file.isDirectory &&
+        isExpanded &&
+        file.children?.map((child) => (
+          <TreeNode
+            key={child.id}
+            file={child}
+            depth={depth + 1}
+            currentFilePath={currentFilePath}
+            onSelectFile={onSelectFile}
+            expandedDirs={expandedDirs}
+            onToggleDir={onToggleDir}
+          />
+        ))}
     </>
   );
 }
@@ -143,15 +179,26 @@ function CommitSuccessToast({ visible }: { visible: boolean }) {
   React.useEffect(() => {
     if (visible) {
       Animated.sequence([
-        Animated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 220,
+          useNativeDriver: true,
+        }),
         Animated.delay(1800),
-        Animated.timing(opacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+        Animated.timing(opacity, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }),
       ]).start();
     }
   }, [visible]);
 
   return (
-    <Animated.View style={[toastStyles.container, { opacity }]} pointerEvents="none">
+    <Animated.View
+      style={[toastStyles.container, { opacity }]}
+      pointerEvents="none"
+    >
       <Check size={15} color={Colors.accentPrimary} />
       <Text style={toastStyles.text}>Changes committed successfully</Text>
     </Animated.View>
@@ -161,143 +208,222 @@ function CommitSuccessToast({ visible }: { visible: boolean }) {
 // ─── Main Screen ─────────────────────────────────────────────────────────────
 
 export default function FileViewer() {
-  const router   = useRouter();
-  const insets   = useSafeAreaInsets();
-  const params   = useLocalSearchParams<{
-    name: string; content: string; ext: string; filePath?: string;
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{
+    name: string;
+    content: string;
+    ext: string;
+    filePath?: string;
   }>();
+  const { files, selectedRepo } = useGit();
 
-  const initialContent = params.content ?? '';
+  const initialContent = params.content ?? "";
 
-  const [fileName,    setFileName]    = useState(params.name ?? 'Untitled');
-  const [fileExt,     setFileExt]     = useState(params.ext ?? '');
-  const [filePath,    setFilePath]    = useState(params.filePath ?? `/${params.name ?? 'Untitled'}`);
-  const [content,     setContent]     = useState(initialContent);
+  const [fileName, setFileName] = useState(params.name ?? "Untitled");
+  const [fileExt, setFileExt] = useState(params.ext ?? "");
+  const [filePath, setFilePath] = useState(
+    params.filePath ?? `/${params.name ?? "Untitled"}`
+  );
+  const [content, setContent] = useState(initialContent);
   const [editContent, setEditContent] = useState(initialContent);
-  const [mode,        setMode]        = useState<'view' | 'edit'>('view');
-  const [copied,      setCopied]      = useState(false);
-  const [commitMsg,   setCommitMsg]   = useState('');
+  const [mode, setMode] = useState<"view" | "edit">("view");
+  const [copied, setCopied] = useState(false);
+  const [commitMsg, setCommitMsg] = useState("");
   const [toastVisible, setToastVisible] = useState(false);
 
   // tree drawer
   const [treeOpen, setTreeOpen] = useState(false);
-  const treeX    = useRef(new Animated.Value(-TREE_PANEL_WIDTH)).current;
+  const treeX = useRef(new Animated.Value(-TREE_PANEL_WIDTH)).current;
   const overlayO = useRef(new Animated.Value(0)).current;
 
-  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => {
+  function initialDirSet(list: GitFile[]): Set<string> {
     const s = new Set<string>();
-    mockFiles.forEach(f => { if (f.isDirectory) s.add(f.id); });
+    const walk = (items: GitFile[]) => {
+      for (const f of items) {
+        if (f.isDirectory) {
+          s.add(f.id);
+          if (f.children) walk(f.children);
+        }
+      }
+    };
+    walk(list);
     return s;
-  });
+  }
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() =>
+    initialDirSet(files)
+  );
 
-  const lines     = useMemo(() => content.split('\n'), [content]);
-  const pathParts = useMemo(() => filePath.replace(/^\//, '').split('/').filter(Boolean), [filePath]);
+  const lines = useMemo(() => content.split("\n"), [content]);
+  const pathParts = useMemo(
+    () => filePath.replace(/^\//, "").split("/").filter(Boolean),
+    [filePath]
+  );
   const canCommit = editContent !== content && commitMsg.trim().length > 0;
 
   // ── Tree open / close ────────────────────────────────────────────────
   const openTree = useCallback(() => {
     setTreeOpen(true);
     Animated.parallel([
-      Animated.spring(treeX, { toValue: 0, useNativeDriver: true, damping: 20, stiffness: 180 }),
-      Animated.timing(overlayO, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.spring(treeX, {
+        toValue: 0,
+        useNativeDriver: true,
+        damping: 20,
+        stiffness: 180,
+      }),
+      Animated.timing(overlayO, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
     ]).start();
   }, [treeX, overlayO]);
 
   const closeTree = useCallback(() => {
     Animated.parallel([
-      Animated.spring(treeX, { toValue: -TREE_PANEL_WIDTH, useNativeDriver: true, damping: 20, stiffness: 180 }),
-      Animated.timing(overlayO, { toValue: 0, duration: 200, useNativeDriver: true }),
+      Animated.spring(treeX, {
+        toValue: -TREE_PANEL_WIDTH,
+        useNativeDriver: true,
+        damping: 20,
+        stiffness: 180,
+      }),
+      Animated.timing(overlayO, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
     ]).start(() => setTreeOpen(false));
   }, [treeX, overlayO]);
 
   const toggleDir = useCallback((id: string) => {
-    setExpandedDirs(prev => {
+    setExpandedDirs((prev) => {
       const n = new Set(prev);
       n.has(id) ? n.delete(id) : n.add(id);
       return n;
     });
   }, []);
 
-  const handleSelectFile = useCallback((file: GitFile) => {
-    const c = file.content ?? '';
-    setFileName(file.name);
-    setFileExt(file.extension ?? '');
-    setFilePath(file.path);
-    setContent(c);
-    setEditContent(c);
-    setMode('view');
-    setCommitMsg('');
-    closeTree();
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }, [closeTree]);
+  const handleSelectFile = useCallback(
+    (file: GitFile) => {
+      const c = file.content ?? "";
+      setFileName(file.name);
+      setFileExt(file.extension ?? "");
+      setFilePath(file.path);
+      setContent(c);
+      setEditContent(c);
+      setMode("view");
+      setCommitMsg("");
+      closeTree();
+      if (Platform.OS !== "web")
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    },
+    [closeTree]
+  );
 
   // ── Copy ─────────────────────────────────────────────────────────────
   const handleCopy = useCallback(async () => {
     await Clipboard.setStringAsync(content);
     setCopied(true);
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (Platform.OS !== "web")
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setTimeout(() => setCopied(false), 2000);
   }, [content]);
 
   // ── Mode toggle ───────────────────────────────────────────────────────
-  const switchMode = useCallback((next: 'view' | 'edit') => {
-    if (next === 'edit') setEditContent(content);
-    setMode(next);
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }, [content]);
+  const switchMode = useCallback(
+    (next: "view" | "edit") => {
+      if (next === "edit") setEditContent(content);
+      setMode(next);
+      if (Platform.OS !== "web")
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    },
+    [content]
+  );
 
   // ── Commit ────────────────────────────────────────────────────────────
   const handleCommit = useCallback(() => {
     if (!canCommit) return;
     setContent(editContent);
-    setCommitMsg('');
-    setMode('view');
+    setCommitMsg("");
+    setMode("view");
     setToastVisible(true);
     setTimeout(() => setToastVisible(false), 3000);
-    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if (Platform.OS !== "web")
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   }, [canCommit, editContent]);
 
   const { Icon: FileIconComp, color: fileIconColor } = getFileIcon(fileExt);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
-
       {/* ── HEADER ─────────────────────────────────────────────────── */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn}>
           <ArrowLeft size={21} color={Colors.textPrimary} />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.treeBtn} onPress={openTree} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.treeBtn}
+          onPress={openTree}
+          activeOpacity={0.7}
+        >
           <FolderTree size={17} color={Colors.textSecondary} />
         </TouchableOpacity>
 
         <View style={styles.headerCenter}>
           <FileIconComp size={15} color={fileIconColor} />
-          <Text style={styles.headerFileName} numberOfLines={1}>{fileName}</Text>
+          <Text style={styles.headerFileName} numberOfLines={1}>
+            {fileName}
+          </Text>
         </View>
 
-        <TouchableOpacity style={styles.iconBtn} onPress={handleCopy} activeOpacity={0.7}>
-          {copied
-            ? <Check size={17} color={Colors.accentPrimary} />
-            : <Copy size={17} color={Colors.textSecondary} />}
+        <TouchableOpacity
+          style={styles.iconBtn}
+          onPress={handleCopy}
+          activeOpacity={0.7}
+        >
+          {copied ? (
+            <Check size={17} color={Colors.accentPrimary} />
+          ) : (
+            <Copy size={17} color={Colors.textSecondary} />
+          )}
         </TouchableOpacity>
 
         {/* View / Edit toggle pill */}
         <View style={styles.modeToggle}>
           <TouchableOpacity
-            style={[styles.modeBtn, mode === 'view' && styles.modeBtnActive]}
-            onPress={() => switchMode('view')}
+            style={[styles.modeBtn, mode === "view" && styles.modeBtnActive]}
+            onPress={() => switchMode("view")}
           >
-            <Eye size={13} color={mode === 'view' ? Colors.accentPrimary : Colors.textMuted} />
-            <Text style={[styles.modeBtnText, mode === 'view' && styles.modeBtnTextActive]}>View</Text>
+            <Eye
+              size={13}
+              color={mode === "view" ? Colors.accentPrimary : Colors.textMuted}
+            />
+            <Text
+              style={[
+                styles.modeBtnText,
+                mode === "view" && styles.modeBtnTextActive,
+              ]}
+            >
+              View
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.modeBtn, mode === 'edit' && styles.modeBtnActive]}
-            onPress={() => switchMode('edit')}
+            style={[styles.modeBtn, mode === "edit" && styles.modeBtnActive]}
+            onPress={() => switchMode("edit")}
           >
-            <Edit3 size={13} color={mode === 'edit' ? Colors.accentPrimary : Colors.textMuted} />
-            <Text style={[styles.modeBtnText, mode === 'edit' && styles.modeBtnTextActive]}>Edit</Text>
+            <Edit3
+              size={13}
+              color={mode === "edit" ? Colors.accentPrimary : Colors.textMuted}
+            />
+            <Text
+              style={[
+                styles.modeBtnText,
+                mode === "edit" && styles.modeBtnTextActive,
+              ]}
+            >
+              Edit
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -312,7 +438,12 @@ export default function FileViewer() {
         <Text style={styles.breadSep}>/</Text>
         {pathParts.map((part, i) => (
           <React.Fragment key={i}>
-            <Text style={[styles.breadPart, i === pathParts.length - 1 && styles.breadPartLast]}>
+            <Text
+              style={[
+                styles.breadPart,
+                i === pathParts.length - 1 && styles.breadPartLast,
+              ]}
+            >
               {part}
             </Text>
             {i < pathParts.length - 1 && (
@@ -326,11 +457,13 @@ export default function FileViewer() {
       <View style={styles.statsBar}>
         <Text style={styles.statText}>{lines.length} lines</Text>
         <View style={styles.statDot} />
-        <Text style={styles.statText}>{(fileExt || 'txt').toUpperCase()}</Text>
-        {mode === 'edit' && editContent !== content && (
+        <Text style={styles.statText}>{(fileExt || "txt").toUpperCase()}</Text>
+        {mode === "edit" && editContent !== content && (
           <>
             <View style={styles.statDot} />
-            <Text style={[styles.statText, { color: Colors.statusModified }]}>● Unsaved</Text>
+            <Text style={[styles.statText, { color: Colors.statusModified }]}>
+              ● Unsaved
+            </Text>
           </>
         )}
       </View>
@@ -341,7 +474,7 @@ export default function FileViewer() {
         behavior="padding"
         keyboardVerticalOffset={0}
       >
-        {mode === 'view' ? (
+        {mode === "view" ? (
           /* ── View mode ── */
           <ScrollView
             style={styles.codeScroll}
@@ -354,8 +487,10 @@ export default function FileViewer() {
                   <View key={i} style={styles.codeLine}>
                     <Text style={styles.lineNum}>{i + 1}</Text>
                     <View style={styles.lineGutter} />
-                    <Text style={[styles.codeText, { color: getLineColor(line) }]}>
-                      {line || ' '}
+                    <Text
+                      style={[styles.codeText, { color: getLineColor(line) }]}
+                    >
+                      {line || " "}
                     </Text>
                   </View>
                 ))}
@@ -368,8 +503,10 @@ export default function FileViewer() {
           <View style={styles.editOuter}>
             {/* line numbers column */}
             <View style={styles.editLineNums} pointerEvents="none">
-              {editContent.split('\n').map((_, i) => (
-                <Text key={i} style={styles.lineNum}>{i + 1}</Text>
+              {editContent.split("\n").map((_, i) => (
+                <Text key={i} style={styles.lineNum}>
+                  {i + 1}
+                </Text>
               ))}
             </View>
             <View style={styles.lineGutterEdit} />
@@ -390,7 +527,7 @@ export default function FileViewer() {
         )}
 
         {/* ── COMMIT PANEL (edit mode) ──────────────────────────────── */}
-        {mode === 'edit' && (
+        {mode === "edit" && (
           <View style={styles.commitPanel}>
             <View style={styles.commitDivider} />
             <View style={styles.commitRow}>
@@ -414,8 +551,13 @@ export default function FileViewer() {
                 disabled={!canCommit}
                 activeOpacity={0.8}
               >
-                <Send size={13} color={canCommit ? '#fff' : Colors.textMuted} />
-                <Text style={[styles.commitBtnText, !canCommit && styles.commitBtnTextOff]}>
+                <Send size={13} color={canCommit ? "#fff" : Colors.textMuted} />
+                <Text
+                  style={[
+                    styles.commitBtnText,
+                    !canCommit && styles.commitBtnTextOff,
+                  ]}
+                >
                   Commit changes
                 </Text>
               </TouchableOpacity>
@@ -427,13 +569,27 @@ export default function FileViewer() {
       {/* ── TREE DRAWER ────────────────────────────────────────────── */}
       {treeOpen && (
         <>
-          <Animated.View style={[styles.overlay, { opacity: overlayO }]} pointerEvents="auto">
-            <TouchableOpacity style={{ flex: 1 }} onPress={closeTree} activeOpacity={1} />
+          <Animated.View
+            style={[styles.overlay, { opacity: overlayO }]}
+            pointerEvents="auto"
+          >
+            <TouchableOpacity
+              style={{ flex: 1 }}
+              onPress={closeTree}
+              activeOpacity={1}
+            />
           </Animated.View>
 
-          <Animated.View style={[styles.treePanel, { transform: [{ translateX: treeX }] }]}>
+          <Animated.View
+            style={[styles.treePanel, { transform: [{ translateX: treeX }] }]}
+          >
             {/* Tree header */}
-            <View style={[styles.treeHeader, { paddingTop: Math.max(insets.top, Spacing.md) }]}>
+            <View
+              style={[
+                styles.treeHeader,
+                { paddingTop: Math.max(insets.top, Spacing.md) },
+              ]}
+            >
               <FolderTree size={16} color={Colors.accentPrimary} />
               <Text style={styles.treeTitle}>Explorer</Text>
               <TouchableOpacity onPress={closeTree} style={styles.iconBtn}>
@@ -441,14 +597,17 @@ export default function FileViewer() {
               </TouchableOpacity>
             </View>
 
-            {/* Repo label */}
             <View style={styles.repoLabelRow}>
-              <Text style={styles.repoLabelText} numberOfLines={1}>GITLANE-APP</Text>
+              <Text style={styles.repoLabelText} numberOfLines={1}>
+                {selectedRepo?.name ?? "Repository"}
+              </Text>
             </View>
 
-            {/* File tree */}
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-              {mockFiles.map(file => (
+            <ScrollView
+              style={{ flex: 1 }}
+              showsVerticalScrollIndicator={false}
+            >
+              {files.map((file) => (
                 <TreeNode
                   key={file.id}
                   file={file}
@@ -482,8 +641,8 @@ const styles = StyleSheet.create({
   // Header
   header: {
     height: 52,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: Colors.bgSecondary,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: Colors.borderDefault,
@@ -493,14 +652,14 @@ const styles = StyleSheet.create({
   iconBtn: {
     width: 40,
     height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   treeBtn: {
     width: 34,
     height: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: Colors.bgTertiary,
     borderRadius: Radius.sm,
     borderWidth: 1,
@@ -509,22 +668,22 @@ const styles = StyleSheet.create({
   },
   headerCenter: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
     paddingHorizontal: 2,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
   headerFileName: {
     flex: 1,
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: "600",
     color: Colors.textPrimary,
   },
 
   // Mode toggle pill
   modeToggle: {
-    flexDirection: 'row',
+    flexDirection: "row",
     backgroundColor: Colors.bgTertiary,
     borderRadius: Radius.sm,
     padding: 2,
@@ -533,8 +692,8 @@ const styles = StyleSheet.create({
     borderColor: Colors.borderDefault,
   },
   modeBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 4,
     paddingHorizontal: 8,
     paddingVertical: 5,
@@ -546,12 +705,12 @@ const styles = StyleSheet.create({
   },
   modeBtnText: {
     fontSize: 11,
-    fontWeight: '500',
+    fontWeight: "500",
     color: Colors.textMuted,
   },
   modeBtnTextActive: {
     color: Colors.accentPrimary,
-    fontWeight: '600',
+    fontWeight: "600",
   },
 
   // Breadcrumb
@@ -562,7 +721,7 @@ const styles = StyleSheet.create({
     maxHeight: 34,
   },
   breadcrumbContent: {
-    alignItems: 'center',
+    alignItems: "center",
     paddingHorizontal: Spacing.md,
     paddingVertical: 7,
     gap: 3,
@@ -571,22 +730,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Colors.textMuted,
     marginRight: 1,
-    fontFamily: 'monospace',
+    fontFamily: "monospace",
   },
   breadPart: {
     fontSize: 12,
     color: Colors.textSecondary,
-    fontFamily: 'monospace',
+    fontFamily: "monospace",
   },
   breadPartLast: {
     color: Colors.textPrimary,
-    fontWeight: '600',
+    fontWeight: "600",
   },
 
   // Stats bar
   statsBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: Colors.bgElevated,
     paddingHorizontal: Spacing.md,
     paddingVertical: 5,
@@ -597,7 +756,7 @@ const styles = StyleSheet.create({
   statText: {
     fontSize: 11,
     color: Colors.textMuted,
-    fontFamily: 'monospace',
+    fontFamily: "monospace",
   },
   statDot: {
     width: 3,
@@ -616,43 +775,43 @@ const styles = StyleSheet.create({
     paddingRight: Spacing.xl,
   },
   codeLine: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
+    flexDirection: "row",
+    alignItems: "flex-start",
     minHeight: 22,
   },
   lineNum: {
     width: 42,
-    textAlign: 'right',
+    textAlign: "right",
     paddingRight: 10,
     fontSize: 12,
     lineHeight: 22,
-    color: '#4C566A',
-    fontFamily: 'monospace',
+    color: "#4C566A",
+    fontFamily: "monospace",
     flexShrink: 0,
   },
   lineGutter: {
     width: 1,
-    alignSelf: 'stretch',
+    alignSelf: "stretch",
     backgroundColor: Colors.borderMuted,
     marginRight: Spacing.sm + 2,
   },
   codeText: {
     fontSize: 13,
     lineHeight: 22,
-    fontFamily: 'monospace',
+    fontFamily: "monospace",
   },
 
   // Edit mode
   editOuter: {
     flex: 1,
-    flexDirection: 'row',
+    flexDirection: "row",
     backgroundColor: Colors.codeBackground,
   },
   editLineNums: {
     width: 42,
     paddingTop: Spacing.sm,
     backgroundColor: Colors.codeBackground,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
   lineGutterEdit: {
     width: 1,
@@ -664,10 +823,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 22,
     color: Colors.textPrimary,
-    fontFamily: 'monospace',
+    fontFamily: "monospace",
     paddingTop: Spacing.sm,
     paddingRight: Spacing.md,
-    textAlignVertical: 'top',
+    textAlignVertical: "top",
     backgroundColor: Colors.codeBackground,
   },
 
@@ -684,8 +843,8 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.sm,
   },
   commitRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
     backgroundColor: Colors.bgTertiary,
     borderRadius: Radius.sm,
@@ -703,17 +862,17 @@ const styles = StyleSheet.create({
     maxHeight: 72,
   },
   commitFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   charCount: {
     fontSize: 11,
     color: Colors.textMuted,
   },
   commitBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
     backgroundColor: Colors.accentPrimary,
     paddingHorizontal: 16,
@@ -728,8 +887,8 @@ const styles = StyleSheet.create({
   },
   commitBtnText: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#fff',
+    fontWeight: "600",
+    color: "#fff",
   },
   commitBtnTextOff: {
     color: Colors.textMuted,
@@ -738,11 +897,11 @@ const styles = StyleSheet.create({
   // Overlay + tree drawer
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    backgroundColor: "rgba(0,0,0,0.65)",
     zIndex: 10,
   },
   treePanel: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     bottom: 0,
@@ -754,8 +913,8 @@ const styles = StyleSheet.create({
     ...Shadows.md,
   },
   treeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
     paddingHorizontal: Spacing.md,
     paddingBottom: Spacing.sm,
@@ -765,9 +924,9 @@ const styles = StyleSheet.create({
   treeTitle: {
     flex: 1,
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.textSecondary,
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
     letterSpacing: 1,
   },
   repoLabelRow: {
@@ -778,7 +937,7 @@ const styles = StyleSheet.create({
   },
   repoLabelText: {
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: "700",
     color: Colors.textPrimary,
     letterSpacing: 0.8,
   },
@@ -786,8 +945,8 @@ const styles = StyleSheet.create({
 
 const treeStyles = StyleSheet.create({
   node: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     paddingVertical: 7,
     paddingRight: Spacing.md,
     gap: 6,
@@ -797,27 +956,27 @@ const treeStyles = StyleSheet.create({
   },
   dirArrow: {
     width: 16,
-    alignItems: 'center',
+    alignItems: "center",
   },
   nodeName: {
     flex: 1,
     fontSize: 13,
     color: Colors.textSecondary,
-    fontFamily: 'monospace',
+    fontFamily: "monospace",
   },
   nodeNameActive: {
     color: Colors.accentPrimary,
-    fontWeight: '600',
+    fontWeight: "600",
   },
 });
 
 const toastStyles = StyleSheet.create({
   container: {
-    position: 'absolute',
+    position: "absolute",
     bottom: 90,
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
     backgroundColor: Colors.bgElevated,
     borderWidth: 1,
@@ -830,8 +989,7 @@ const toastStyles = StyleSheet.create({
   },
   text: {
     fontSize: 13,
-    fontWeight: '500',
+    fontWeight: "500",
     color: Colors.textPrimary,
   },
 });
-
