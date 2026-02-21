@@ -154,12 +154,8 @@ async function ensureDirDeep(dir: string) {
 }
 
 async function removeDir(dir: string) {
-  try {
-    // ExpoFS rmdir deletes recursively
-    await fs.promises.rmdir(dir);
-  } catch (err) {
-    console.warn(TAG, "removeDir failed", err);
-  }
+  // ExpoFS rmdir deletes recursively — propagate errors to caller
+  await fs.promises.rmdir(dir);
 }
 
 export class GitEngine {
@@ -308,25 +304,50 @@ export class GitEngine {
     name: string,
     dir: string
   ): Promise<Repository> {
-    const currentBranch =
-      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+    let currentBranch: string;
+    try {
+      currentBranch =
+        (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+    } catch {
+      // HEAD may point to a non-existent ref (empty repo or mismatched default branch)
+      currentBranch = "main";
+    }
+
     const branches = await git.listBranches({ fs, dir });
     const branchMeta: GitBranch[] = await Promise.all(
       branches.map(async (branch) => {
-        const head = (await git.log({ fs, dir, ref: branch, depth: 1 }))[0];
-        return {
-          name: branch,
-          isRemote: false,
-          isCurrent: branch === currentBranch,
-          lastCommitSha: head?.oid ?? "",
-          lastCommitMessage: head?.commit.message ?? "",
-          ahead: 0,
-          behind: 0,
-        };
+        try {
+          const head = (await git.log({ fs, dir, ref: branch, depth: 1 }))[0];
+          return {
+            name: branch,
+            isRemote: false,
+            isCurrent: branch === currentBranch,
+            lastCommitSha: head?.oid ?? "",
+            lastCommitMessage: head?.commit.message ?? "",
+            ahead: 0,
+            behind: 0,
+          };
+        } catch {
+          // Branch ref exists but has no commits yet
+          return {
+            name: branch,
+            isRemote: false,
+            isCurrent: branch === currentBranch,
+            lastCommitSha: "",
+            lastCommitMessage: "",
+            ahead: 0,
+            behind: 0,
+          };
+        }
       })
     );
 
-    const statusMatrix = await git.statusMatrix({ fs, dir });
+    let statusMatrix: [string, number, number, number][] = [];
+    try {
+      statusMatrix = await git.statusMatrix({ fs, dir });
+    } catch {
+      // Empty repo with no commits can't produce a status matrix
+    }
     const stagedCount = statusMatrix.filter(
       ([, , , stage]) => stage === 2 || stage === 3
     ).length;
@@ -337,9 +358,16 @@ export class GitEngine {
       ([, , , stage]) => stage === 3
     ).length;
 
-    const latestCommit = (await git.log({ fs, dir, depth: 1 }))[0];
+    let latestCommit: Awaited<ReturnType<typeof git.log>>[0] | undefined;
+    let commitCount = 0;
+    try {
+      const logs = await git.log({ fs, dir, depth: 50 });
+      latestCommit = logs[0];
+      commitCount = logs.length;
+    } catch {
+      // No commits yet
+    }
     const lastActivity = formatTimestamp(latestCommit?.commit.author.timestamp);
-    const commitCount = (await git.log({ fs, dir, depth: 50 })).length;
 
     console.log(
       TAG,
@@ -497,8 +525,14 @@ export class GitEngine {
 
   async deleteRepository(id: string) {
     const dir = this.resolveRepoDir(id);
-    console.log(TAG, `deleteRepository(${id}) â†’ removing ${dir}`);
-    await removeDir(dir);
+    console.log(TAG, `deleteRepository(${id}) → removing ${dir}`);
+    try {
+      await removeDir(dir);
+      console.log(TAG, `deleteRepository(${id}) → removed successfully`);
+    } catch (err) {
+      console.error(TAG, `deleteRepository(${id}) → removeDir failed`, err);
+      throw new Error(`Failed to delete repository "${id}": ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // â”€â”€ Stage / Unstage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -646,12 +680,42 @@ export class GitEngine {
       const txList = await readTransactions(dir);
       const pending = txList.filter((e) => e.status === "PENDING");
       if (pending.length > 0) {
-        console.warn(
-          TAG,
-          `âš  PENDING transactions in ${name}:`,
-          pending.map((p) => `${p.type}(${p.id})`).join(", ")
-        );
-        results.push({ repoId: name, dir, entries: pending });
+        // Auto-expire PENDING transactions older than 5 minutes
+        const STALE_MS = 5 * 60 * 1000;
+        const now = Date.now();
+        let hasStale = false;
+        for (const p of pending) {
+          if (now - p.startedAt > STALE_MS) {
+            hasStale = true;
+            break;
+          }
+        }
+        if (hasStale) {
+          const updated = txList.map((e) =>
+            e.status === "PENDING" && now - e.startedAt > STALE_MS
+              ? { ...e, status: "FAILED" as const, completedAt: now }
+              : e
+          );
+          await writeTransactions(dir, updated);
+          const remaining = updated.filter((e) => e.status === "PENDING");
+          if (remaining.length > 0) {
+            console.warn(
+              TAG,
+              `\u26A0 PENDING transactions in ${name}:`,
+              remaining.map((p) => `${p.type}(${p.id})`).join(", ")
+            );
+            results.push({ repoId: name, dir, entries: remaining });
+          } else {
+            console.log(TAG, `Auto-expired stale transactions in ${name}`);
+          }
+        } else {
+          console.warn(
+            TAG,
+            `\u26A0 PENDING transactions in ${name}:`,
+            pending.map((p) => `${p.type}(${p.id})`).join(", ")
+          );
+          results.push({ repoId: name, dir, entries: pending });
+        }
       }
     }
 

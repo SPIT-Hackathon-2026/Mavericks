@@ -150,10 +150,16 @@ export const [GitProvider, useGit] = createContextHook(() => {
 
   const deleteRepository = useCallback(
     async (id: string) => {
-      await gitEngine.deleteRepository(id);
-      if (selectedRepoId === id) setSelectedRepoId(null);
-      queryClient.invalidateQueries({ queryKey: ["repositories"] });
-      showToast("warning", "Repository removed");
+      try {
+        await gitEngine.deleteRepository(id);
+        if (selectedRepoId === id) setSelectedRepoId(null);
+        await queryClient.invalidateQueries({ queryKey: ["repositories"] });
+        showToast("warning", "Repository removed");
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Failed to delete repository";
+        showToast("error", message);
+      }
     },
     [selectedRepoId, queryClient],
   );

@@ -195,7 +195,7 @@ export function deriveStatsFromEvents(events: GitHubEvent[]): ProfileStats {
   for (const e of events) {
     repos.add(e.repo.name);
     if (e.type === 'PushEvent') {
-      totalCommits += e.payload.commits?.length ?? e.payload.size ?? 0;
+      totalCommits += e.payload.commits?.length ?? e.payload.size ?? 1;
     }
     if (e.type === 'CreateEvent' && e.payload.ref_type === 'branch') {
       totalBranches++;
@@ -226,15 +226,17 @@ export function buildRecentActivity(events: GitHubEvent[], limit = 20): RecentAc
     const dateStr = e.created_at.slice(0, 10);
 
     if (e.type === 'PushEvent') {
-      const count = e.payload.commits?.length ?? e.payload.size ?? 0;
-      activities.push({
-        type: 'commit',
-        msg: `Created ${count} commit${count !== 1 ? 's' : ''} in 1 repository`,
-        repo: e.repo.name,
-        detail: `${count} commit${count !== 1 ? 's' : ''}`,
-        date: dateLabel,
-        dateStr,
-      });
+      const count = e.payload.commits?.length ?? e.payload.size ?? 1;
+      if (count > 0) {
+        activities.push({
+          type: 'commit',
+          msg: `Created ${count} commit${count !== 1 ? 's' : ''} in 1 repository`,
+          repo: e.repo.name,
+          detail: `${count} commit${count !== 1 ? 's' : ''}`,
+          date: dateLabel,
+          dateStr,
+        });
+      }
     } else if (e.type === 'CreateEvent') {
       if (e.payload.ref_type === 'repository') {
         activities.push({

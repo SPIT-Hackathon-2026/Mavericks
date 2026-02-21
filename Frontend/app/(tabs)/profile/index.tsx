@@ -571,17 +571,30 @@ export default function ProfileScreen() {
       ]);
 
       if (cachedProfile) setProfile(cachedProfile);
-      if (cachedStats) setStats(cachedStats);
       if (cachedActivity) setActivities(cachedActivity.items);
       setOfflineCommits(cachedOffline);
 
       const contribs: Record<number, ContribMap> = {};
+      let cachedContribTotal = 0;
       for (const y of [currentYear - 2, currentYear - 1, currentYear]) {
         const cached = await profileCache.getContributions(y);
-        if (cached) contribs[y] = cached.contribMap;
+        if (cached) {
+          contribs[y] = cached.contribMap;
+          if (y === currentYear) {
+            cachedContribTotal = cached.totalContributions;
+          }
+        }
       }
       if (Object.keys(contribs).length > 0) {
         setContribMaps(prev => ({ ...prev, ...contribs }));
+      }
+
+      // If cached stats have 0 commits but we have contribution data, fix it
+      if (cachedStats) {
+        if (cachedContribTotal > 0 && cachedStats.totalCommits === 0) {
+          cachedStats.totalCommits = cachedContribTotal;
+        }
+        setStats(cachedStats);
       }
     } catch (err) {
       console.warn('[Profile] Failed to load cache:', err);
@@ -600,12 +613,16 @@ export default function ProfileScreen() {
       setProfile(cachedProfile);
       await profileCache.setProfile(cachedProfile);
 
-      await fetchContributionsForYear(year);
+      const totalContribs = await fetchContributionsForYear(year);
 
       const events = await fetchUserEvents(token, ghProfile.login, 3);
       const derivedStats = deriveStatsFromEvents(events);
       const cachedStats: CachedStats = { ...derivedStats, fetchedAt: Date.now() };
       cachedStats.totalRepos = ghProfile.publicRepos + ghProfile.totalPrivateRepos;
+      // Use contribution calendar total — much more accurate than events API
+      if (totalContribs > 0) {
+        cachedStats.totalCommits = totalContribs;
+      }
       setStats(cachedStats);
       await profileCache.setStats(cachedStats);
 
@@ -625,8 +642,8 @@ export default function ProfileScreen() {
   }, [token, year, profile]);
 
   // ── Fetch contributions for a specific year ────────────
-  const fetchContributionsForYear = useCallback(async (y: number) => {
-    if (!token) return;
+  const fetchContributionsForYear = useCallback(async (y: number): Promise<number> => {
+    if (!token) return 0;
     try {
       const contribData = await fetchContributions(token, y);
       const map = contribYearToMap(contribData);
@@ -637,8 +654,10 @@ export default function ProfileScreen() {
         contribMap: map,
         fetchedAt: Date.now(),
       });
+      return contribData.totalContributions;
     } catch (err) {
       console.warn(`[Profile] Failed to fetch contributions for ${y}:`, err);
+      return 0;
     }
   }, [token]);
 
@@ -674,13 +693,23 @@ export default function ProfileScreen() {
   // ── Computed stats (merged with offline) ───────────────
   const displayStats = useMemo(() => {
     const base = stats ?? { totalCommits: 0, totalRepos: 0, totalBranches: 0, totalMerges: 0 };
+
+    // If stats.totalCommits is still 0, derive from the contribution heatmap
+    let commitCount = base.totalCommits;
+    if (commitCount === 0) {
+      const map = contribMaps[year];
+      if (map) {
+        commitCount = Object.values(map).reduce((sum, c) => sum + c, 0);
+      }
+    }
+
     return [
-      { label: 'Commits',  value: formatNum(base.totalCommits + pendingOffline), Icon: GitCommit, color: Colors.accentPrimary },
-      { label: 'Repos',    value: String(base.totalRepos),                       Icon: Code2,     color: Colors.accentInfo },
-      { label: 'Branches', value: String(base.totalBranches),                    Icon: GitBranch, color: Colors.accentPurple },
-      { label: 'Merges',   value: String(base.totalMerges),                      Icon: GitMerge,  color: Colors.accentWarning },
+      { label: 'Commits',  value: formatNum(commitCount + pendingOffline), Icon: GitCommit, color: Colors.accentPrimary },
+      { label: 'Repos',    value: String(base.totalRepos),                 Icon: Code2,     color: Colors.accentInfo },
+      { label: 'Branches', value: String(base.totalBranches),              Icon: GitBranch, color: Colors.accentPurple },
+      { label: 'Merges',   value: String(base.totalMerges),                Icon: GitMerge,  color: Colors.accentWarning },
     ];
-  }, [stats, pendingOffline]);
+  }, [stats, pendingOffline, contribMaps, year]);
 
   const joinedDate = useMemo(() => {
     if (!profile?.createdAt) return '';
