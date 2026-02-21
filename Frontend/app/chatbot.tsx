@@ -5,10 +5,13 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ArrowLeft, Send, MessageCircle } from 'lucide-react-native';
+import { ArrowLeft, Send, MessageCircle, Trash2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Colors from '@/constants/colors';
 import { Spacing, Radius, Shadows } from '@/constants/theme';
+import { useGit } from '@/contexts/GitContext';
+import { handleUserMessage } from '@/services/git/chatbot-service';
 
 interface Message {
   id: string;
@@ -17,25 +20,88 @@ interface Message {
   loading?: boolean;
 }
 
-const FAKE_RESPONSES = [
-  'That\'s a great question! Let me help you with that.',
-  'Based on your query, here\'s what I found...',
-  'Interesting! Here are some suggestions for you.',
-  'I understand. Let me provide you with the details.',
-  'Perfect timing! Here\'s what you need to know.',
-];
-
 export default function ChatbotScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { selectedRepoId, repositories } = useGit();
+  // Use the selected repo, or fall back to the first available one.
+  // The chatbot can be opened without navigating to a repo first.
+  const effectiveRepoId = selectedRepoId ?? repositories[0]?.id ?? null;
   const scrollViewRef = useRef<ScrollView>(null);
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+
+  // Storage key is per-repo so each repo has its own chat history
+  const storageKey = `gitlane:chat:${effectiveRepoId ?? 'global'}`;
+
+  // Build the welcome message
+  const makeWelcome = useCallback((): Message => {
+    const repoName = repositories.find(r => r.id === effectiveRepoId)?.name;
+    const repoLine = repoName
+      ? `Active repo: **${repoName}**`
+      : repositories.length === 0
+        ? 'No repositories yet — clone or create one first.'
+        : 'No repo selected — open a repo to use git queries.';
+    return {
+      id: 'welcome',
       type: 'bot',
-      text: 'Hey! I\'m your Git assistant. Ask me anything about repositories, branches, commits, or anything else git-related!',
-    },
-  ]);
+      text:
+        `Hey! I'm your Git assistant.\n${repoLine}\n\n` +
+        'You can ask me:\n' +
+        '• "Show me the latest changes"\n' +
+        '• "Find commits by Alice"\n' +
+        '• "Search for files named index"\n' +
+        '• "Show commits from last week"\n' +
+        '• Or just say hello 🙂',
+    };
+  }, [effectiveRepoId, repositories]);
+
+  // Load saved history (or show welcome) when repo changes
+  useEffect(() => {
+    let cancelled = false;
+    setHistoryLoaded(false);
+    AsyncStorage.getItem(storageKey).then(raw => {
+      if (cancelled) return;
+      if (raw) {
+        try {
+          const saved = JSON.parse(raw) as Message[];
+          if (saved.length > 0) {
+            setMessages(saved);
+            setHistoryLoaded(true);
+            return;
+          }
+        } catch { /* corrupted — fall through */ }
+      }
+      setMessages([makeWelcome()]);
+      setHistoryLoaded(true);
+    }).catch(() => {
+      if (!cancelled) {
+        setMessages([makeWelcome()]);
+        setHistoryLoaded(true);
+      }
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey]);
+
+  // Persist messages whenever they change (skip while loading)
+  useEffect(() => {
+    if (!historyLoaded) return;
+    const real = messages.filter(m => !m.loading);
+    // Don't persist welcome-only state
+    if (real.length <= 1 && real[0]?.id === 'welcome') return;
+    AsyncStorage.setItem(storageKey, JSON.stringify(real)).catch(() => {});
+  }, [messages, historyLoaded, storageKey]);
+
+  // Clear chat for this repo
+  const handleClearChat = useCallback(async () => {
+    await AsyncStorage.removeItem(storageKey).catch(() => {});
+    setMessages([makeWelcome()]);
+    if (Platform.OS !== 'web') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    }
+  }, [storageKey, makeWelcome]);
+
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const dotAnim = useRef(new Animated.Value(0)).current;
@@ -90,17 +156,20 @@ export default function ChatbotScreen() {
     setMessages(prev => [...prev, loadingMessage]);
     scrollToBottom();
 
-    // Simulate API call with 2-3 second delay
-    await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 1000));
+    // Call LLM pipeline: intent → execute → humanize
+    let botResponse: string;
+    try {
+      botResponse = await handleUserMessage(userMessage.text, effectiveRepoId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      botResponse = `Something went wrong: ${msg}`;
+    }
 
     if (Platform.OS !== 'web') {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
 
-    // Replace loading message with actual response
-    const randomResponse = FAKE_RESPONSES[Math.floor(Math.random() * FAKE_RESPONSES.length)];
-    const botResponse = `${randomResponse}\n\nYou asked: "${inputText.trim()}"\n\nThis is a simulated response from your Git assistant. In a real implementation, this would be connected to an actual AI chatbot service.`;
-
+    // Replace loading bubble with real response
     setMessages(prev =>
       prev.map(msg =>
         msg.id === loadingMessageId
@@ -111,7 +180,7 @@ export default function ChatbotScreen() {
 
     setIsLoading(false);
     scrollToBottom();
-  }, [inputText, isLoading, scrollToBottom]);
+  }, [inputText, isLoading, scrollToBottom, effectiveRepoId]);
 
   const LoadingDots = () => {
     const opacity1 = dotAnim.interpolate({
@@ -151,7 +220,13 @@ export default function ChatbotScreen() {
           </View>
           <Text style={styles.headerTitle}>Git Assistant</Text>
         </View>
-        <View style={{ width: 40 }} />
+        <TouchableOpacity
+          style={styles.clearBtn}
+          onPress={handleClearChat}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Trash2 size={18} color={Colors.textMuted} />
+        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -224,11 +299,12 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.bgPrimary,
   },
   header: {
-    height: 60,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.md,
+    minHeight: 60,
     backgroundColor: Colors.bgSecondary,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: Colors.borderDefault,
@@ -260,6 +336,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: Colors.accentPrimaryDim,
+  },
+  clearBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   messagesContainer: {
     flex: 1,
