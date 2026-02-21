@@ -18,6 +18,7 @@ import SegmentedControl from '@/components/SegmentedControl';
 import StatusBadge from '@/components/StatusBadge';
 import { getAuthorColor, getAuthorInitials } from '@/mocks/repositories';
 import type { GitFile, GitCommit as GitCommitType } from '@/types/git';
+import GraphScreen from '@/app/(tabs)/graph';
 
 const fileIconMap: Record<string, { Icon: typeof FileCode2; color: string }> = {
   tsx: { Icon: FileCode2, color: '#3B82F6' },
@@ -118,7 +119,7 @@ export default function RepositoryDetail() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const {
-    repositories, files, commits, selectedRepo, commitChanges,
+    repositories, files, commits, selectedRepo, commitChanges, setSelectedRepoId,
     switchBranch, createBranch, stageFile, unstageFile, pushSelectedRepo,
   } = useGit();
 
@@ -128,6 +129,13 @@ export default function RepositoryDetail() {
   const [commitMessage, setCommitMessage] = useState('');
   const [showBranchSelector, setShowBranchSelector] = useState(false);
   const [stagedFileIds, setStagedFileIds] = useState<Set<string>>(new Set());
+  const [historySubIndex, setHistorySubIndex] = useState(0);
+  
+  useEffect(() => {
+    if (id && selectedRepo?.id !== id) {
+      setSelectedRepoId(id);
+    }
+  }, [id, selectedRepo?.id, setSelectedRepoId]);
 
   const currentFiles = useMemo(() => {
     let current = files;
@@ -390,21 +398,36 @@ export default function RepositoryDetail() {
       )}
 
       {tabIndex === 2 && (
-        <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
-          {commits.map(commit => (
-            <CommitRow
-              key={commit.sha}
-              commit={commit}
-              onPress={() => {
-                router.push({
-                  pathname: '/commit-detail',
-                  params: { sha: commit.sha },
-                });
-              }}
+        <View style={styles.tabContent}>
+          <View style={styles.segmentWrap}>
+            <SegmentedControl
+              segments={['Commits', 'Graph']}
+              selectedIndex={historySubIndex}
+              onChange={setHistorySubIndex}
             />
-          ))}
-          <View style={{ height: 100 }} />
-        </ScrollView>
+          </View>
+          {historySubIndex === 0 ? (
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {commits.map(commit => (
+                <CommitRow
+                  key={commit.sha}
+                  commit={commit}
+                  onPress={() => {
+                    router.push({
+                      pathname: '/commit-detail',
+                      params: { sha: commit.sha },
+                    });
+                  }}
+                />
+              ))}
+              <View style={{ height: 100 }} />
+            </ScrollView>
+          ) : (
+            <View style={{ flex: 1 }}>
+              <GraphScreen />
+            </View>
+          )}
+        </View>
       )}
 
       {tabIndex === 3 && (
