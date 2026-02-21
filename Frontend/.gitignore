@@ -33,15 +33,15 @@ yarn-error.*
 
 # local env files
 .env*.local
+.env
 
 # typescript
 *.tsbuildinfo
 .vercel
 
 .rork
-
-.env
 rork-eslint.config.js
-core
-node_modules
-.expo
+
+# core folder (ignore contents but allow .gitkeep)
+core/*
+!core/.gitkeep
