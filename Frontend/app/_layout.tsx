@@ -1,0 +1,61 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Stack } from "expo-router";
+import * as SplashScreen from "expo-splash-screen";
+import React, { useEffect } from "react";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { StatusBar } from "expo-status-bar";
+import { GitProvider, useGit } from "@/contexts/GitContext";
+import Toast from "@/components/Toast";
+import Colors from "@/constants/colors";
+
+SplashScreen.preventAutoHideAsync();
+
+const queryClient = new QueryClient();
+
+function ToastOverlay() {
+  const { toastMessage } = useGit();
+  if (!toastMessage) return null;
+  return <Toast type={toastMessage.type} message={toastMessage.message} visible={!!toastMessage} />;
+}
+
+function RootLayoutNav() {
+  return (
+    <>
+      <Stack
+        screenOptions={{
+          headerBackTitle: "Back",
+          headerStyle: { backgroundColor: Colors.bgSecondary },
+          headerTintColor: Colors.textPrimary,
+          headerTitleStyle: { color: Colors.textPrimary },
+          contentStyle: { backgroundColor: Colors.bgPrimary },
+        }}
+      >
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="repository/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="add-repo" options={{ presentation: "modal", headerShown: false }} />
+        <Stack.Screen name="create-repo" options={{ presentation: "modal", headerShown: false }} />
+        <Stack.Screen name="file-viewer" options={{ presentation: "modal", headerShown: false }} />
+        <Stack.Screen name="commit-detail" options={{ presentation: "modal", headerShown: false }} />
+        <Stack.Screen name="merge-conflicts" options={{ presentation: "modal", headerShown: false }} />
+      </Stack>
+      <ToastOverlay />
+    </>
+  );
+}
+
+export default function RootLayout() {
+  useEffect(() => {
+    SplashScreen.hideAsync();
+  }, []);
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <GitProvider>
+          <StatusBar style="light" />
+          <RootLayoutNav />
+        </GitProvider>
+      </GestureHandlerRootView>
+    </QueryClientProvider>
+  );
+}
