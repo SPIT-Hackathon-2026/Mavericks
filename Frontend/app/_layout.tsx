@@ -11,7 +11,9 @@ import React, { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { GitProvider, useGit } from "@/contexts/GitContext";
+import { notificationService } from "@/services/notifications/notificationService";
 import Toast from "@/components/Toast";
+import NotificationBanner from "@/components/NotificationBanner";
 import RecoveryAlert from "@/components/RecoveryAlert";
 import Colors from "@/constants/colors";
 
@@ -47,6 +49,7 @@ function RootLayoutNav() {
         <Stack.Screen name="chatbot" options={{ headerShown: false }} />
       </Stack>
       <ToastOverlay />
+      <NotificationBanner />
       <RecoveryAlert />
     </>
   );
@@ -55,6 +58,8 @@ function RootLayoutNav() {
 export default function RootLayout() {
   useEffect(() => {
     SplashScreen.hideAsync();
+    // Initialize notification permissions on app boot
+    notificationService.init();
   }, []);
 
   return (

@@ -102,43 +102,6 @@ export const [GitProvider, useGit] = createContextHook(() => {
     }
   }, [repositoriesQuery.data, selectedRepoId]);
 
-  // ── Push Queue: start monitoring + subscribe to events ─────────────
-  const showToastRef = useRef(showToast);
-  showToastRef.current = showToast;
-
-  useEffect(() => {
-    pushQueue.startMonitoring();
-
-    const unsub = pushQueue.subscribe((event) => {
-      switch (event.type) {
-        case 'queued':
-          showToastRef.current('info', event.message);
-          break;
-        case 'drain-start':
-          showToastRef.current('info', event.message);
-          break;
-        case 'success':
-          showToastRef.current('success', event.message);
-          queryClient.invalidateQueries({ queryKey: ['repositories'] });
-          break;
-        case 'failed':
-          showToastRef.current('error', event.message);
-          break;
-        case 'drain-end':
-          showToastRef.current(
-            event.remaining === 0 ? 'success' : 'warning',
-            event.message,
-          );
-          break;
-      }
-    });
-
-    return () => {
-      unsub();
-      pushQueue.stopMonitoring();
-    };
-  }, [queryClient]);
-
   const filesQuery = useQuery({
     queryKey: ["files", selectedRepoId],
     queryFn: () =>
@@ -397,6 +360,47 @@ export const [GitProvider, useGit] = createContextHook(() => {
     },
     [],
   );
+
+  // ── Push Queue: start monitoring + subscribe to events ─────────────
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+
+  useEffect(() => {
+    pushQueue.startMonitoring();
+
+    const unsub = pushQueue.subscribe((event) => {
+      switch (event.type) {
+        case 'queued':
+          showToastRef.current('info', event.message);
+          break;
+        case 'drain-start':
+          showToastRef.current('info', event.message);
+          break;
+        case 'syncing':
+          showToastRef.current('info', event.message);
+          break;
+        case 'success':
+          showToastRef.current('success', event.message);
+          queryClient.invalidateQueries({ queryKey: ['repositories'] });
+          break;
+        case 'failed':
+          showToastRef.current('error', event.message);
+          break;
+        case 'drain-end':
+          showToastRef.current(
+            event.remaining === 0 ? 'success' : 'warning',
+            event.message,
+          );
+          queryClient.invalidateQueries({ queryKey: ['repositories'] });
+          break;
+      }
+    });
+
+    return () => {
+      unsub();
+      pushQueue.stopMonitoring();
+    };
+  }, [queryClient]);
 
   return {
     repositories: repositoriesQuery.data ?? [],
