@@ -227,6 +227,27 @@ export const [GitProvider, useGit] = createContextHook(() => {
     [selectedRepoId, queryClient],
   );
 
+  const saveFile = useCallback(
+    async (filepath: string, content: string) => {
+      if (!selectedRepoId) return;
+      await gitEngine.saveFile(selectedRepoId, filepath, content);
+      await queryClient.refetchQueries({ queryKey: ['files', selectedRepoId] });
+      showToast('success', `Saved ${filepath}`);
+    },
+    [selectedRepoId, queryClient],
+  );
+
+  const revertFile = useCallback(
+    async (filepath: string) => {
+      if (!selectedRepoId) return;
+      await gitEngine.revertFile(selectedRepoId, filepath);
+      await queryClient.refetchQueries({ queryKey: ['files', selectedRepoId] });
+      await queryClient.refetchQueries({ queryKey: ['repositories'] });
+      showToast('info', `Reverted ${filepath}`);
+    },
+    [selectedRepoId, queryClient],
+  );
+
   const commitChanges = useCallback(
     async (message: string) => {
       if (!selectedRepo) return;
@@ -501,6 +522,8 @@ export const [GitProvider, useGit] = createContextHook(() => {
     unstageFile,
     createFile,
     deleteFile,
+    saveFile,
+    revertFile,
     commitChanges,
     resolveConflict,
     toastMessage,

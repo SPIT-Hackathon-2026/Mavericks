@@ -508,9 +508,16 @@ export class GitEngine {
     console.log(TAG, `getWorkingTree(${repoId})`);
     const statusMatrix = await git.statusMatrix({ fs, dir });
     const tracked = await git.listFiles({ fs, dir });
+
+    // Also scan the filesystem recursively to catch brand-new untracked files
+    const fsFiles = await this.listAllFiles(dir, '');
     const all = Array.from(
-      new Set([...tracked, ...statusMatrix.map(([filepath]) => filepath)]),
-    );
+      new Set([
+        ...tracked,
+        ...statusMatrix.map(([filepath]) => filepath),
+        ...fsFiles,
+      ]),
+    ).filter(f => !f.startsWith('.git/') && f !== '.git');
 
     const tree: GitFile[] = [];
 
@@ -587,6 +594,35 @@ export class GitEngine {
     }
     if (!dirNode.children) dirNode.children = [];
     this.insertIntoTree(dirNode.children, rest, file);
+  }
+
+  /**
+   * Recursively list all files under `dir`, returning paths relative to `dir`.
+   * Skips the .git directory.
+   */
+  private async listAllFiles(baseDir: string, prefix: string): Promise<string[]> {
+    const results: string[] = [];
+    let entries: string[] = [];
+    const target = prefix ? joinPath(baseDir, prefix) : baseDir;
+    try {
+      entries = await fs.promises.readdir(target);
+    } catch {
+      return results;
+    }
+    for (const entry of entries) {
+      if (entry === '.git') continue;
+      const relPath = prefix ? `${prefix}/${entry}` : entry;
+      const fullPath = joinPath(baseDir, relPath);
+      const stat = await fs.promises.stat(fullPath).catch(() => null);
+      if (!stat) continue;
+      if (stat.type === 'dir') {
+        const children = await this.listAllFiles(baseDir, relPath);
+        results.push(...children);
+      } else {
+        results.push(relPath);
+      }
+    }
+    return results;
   }
 
   async getCommits(repoId: string): Promise<GitCommit[]> {
@@ -817,6 +853,50 @@ export class GitEngine {
 
     await deleteGitCache(dir);
     console.log(TAG, `deleteFile(${repoId}) → ${filepath}`);
+  }
+
+  /**
+   * Save (overwrite) file content on disk without committing.
+   */
+  async saveFile(repoId: string, filepath: string, content: string): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+    await fs.promises.writeFile(fullPath, content, 'utf8');
+    await deleteGitCache(dir);
+    console.log(TAG, `saveFile(${repoId}) → ${filepath}`);
+  }
+
+  /**
+   * Revert a file to the version in the last commit (HEAD).
+   * Also resets the index entry so it doesn't show as staged.
+   */
+  async revertFile(repoId: string, filepath: string): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+
+    try {
+      // Read the file content from HEAD
+      const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+      const { blob } = await git.readBlob({ fs, dir, oid: headOid, filepath });
+      const originalContent = new TextDecoder().decode(blob);
+      await fs.promises.writeFile(fullPath, originalContent, 'utf8');
+      // Also restore the index
+      await git.resetIndex({ fs, dir, filepath });
+      await deleteGitCache(dir);
+      console.log(TAG, `revertFile(${repoId}) → ${filepath} restored from HEAD`);
+    } catch (err) {
+      // If the file doesn't exist in HEAD (new file), just delete it
+      try {
+        await fs.promises.unlink(fullPath);
+      } catch { /* already gone */ }
+      try {
+        await git.remove({ fs, dir, filepath });
+      } catch { /* not in index */ }
+      await deleteGitCache(dir);
+      console.log(TAG, `revertFile(${repoId}) → ${filepath} removed (not in HEAD)`);
+    }
   }
   // â”€â”€ Commit (TX-wrapped + 3 s test delay) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 

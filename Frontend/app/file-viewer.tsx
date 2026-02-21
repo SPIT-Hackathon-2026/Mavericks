@@ -32,6 +32,8 @@ import {
   Send,
   FolderOpen,
   Circle,
+  Save,
+  RotateCcw,
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
@@ -228,7 +230,7 @@ export default function FileViewer() {
     ext: string;
     filePath?: string;
   }>();
-  const { files, selectedRepo } = useGit();
+  const { files, selectedRepo, saveFile, revertFile } = useGit();
 
   const initialContent = params.content ?? "";
 
@@ -273,6 +275,8 @@ export default function FileViewer() {
     [filePath]
   );
   const canCommit = editContent !== content && commitMsg.trim().length > 0;
+  const canSave = editContent !== content;
+  const [isSaving, setIsSaving] = useState(false);
 
   function validateJSON(text: string): string | null {
     try {
@@ -416,6 +420,51 @@ export default function FileViewer() {
     },
     [content]
   );
+
+  // ── Save (local only, no commit) ──────────────────────────────────────
+  const handleSave = useCallback(async () => {
+    if (!canSave || !selectedRepo || isSaving) return;
+    setIsSaving(true);
+    try {
+      const relPath = filePath.replace(/^\//, '');
+      await saveFile(relPath, editContent);
+      setContent(editContent);
+      if (Platform.OS !== 'web')
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err) {
+      if (Platform.OS !== 'web')
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [canSave, isSaving, editContent, filePath, selectedRepo, saveFile]);
+
+  // ── Revert (restore from HEAD) ────────────────────────────────────────
+  const handleRevert = useCallback(async () => {
+    if (!selectedRepo) return;
+    const relPath = filePath.replace(/^\//, '');
+    try {
+      await revertFile(relPath);
+      // Re-read the file content from disk after revert
+      const fullPath = `${selectedRepo.path}/${relPath}`;
+      let restored = '';
+      try {
+        restored = (await expoFS.promises.readFile(fullPath, { encoding: 'utf8' })) as string;
+      } catch {
+        // file was deleted (didn't exist at HEAD) – navigate back
+        router.back();
+        return;
+      }
+      setContent(restored);
+      setEditContent(restored);
+      setMode('view');
+      if (Platform.OS !== 'web')
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err) {
+      if (Platform.OS !== 'web')
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
+  }, [filePath, selectedRepo, revertFile, router]);
 
   // ── Commit ────────────────────────────────────────────────────────────
   const { commitChanges } = useGit();
@@ -637,6 +686,32 @@ export default function FileViewer() {
         {mode === "edit" && (
           <View style={styles.commitPanel}>
             <View style={styles.commitDivider} />
+
+            {/* Save + Revert row */}
+            <View style={styles.saveRevertRow}>
+              <TouchableOpacity
+                style={[styles.saveBtn, !canSave && styles.commitBtnOff]}
+                onPress={handleSave}
+                disabled={!canSave || isSaving}
+                activeOpacity={0.8}
+              >
+                <Save size={13} color={canSave ? '#fff' : Colors.textMuted} />
+                <Text style={[styles.commitBtnText, !canSave && styles.commitBtnTextOff]}>
+                  {isSaving ? 'Saving…' : 'Save locally'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.revertBtn}
+                onPress={handleRevert}
+                activeOpacity={0.8}
+              >
+                <RotateCcw size={13} color={Colors.accentWarning} />
+                <Text style={[styles.commitBtnText, { color: Colors.accentWarning }]}>
+                  Revert
+                </Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.commitRow}>
               <GitCommit size={15} color={Colors.textMuted} />
               <TextInput
@@ -1000,6 +1075,34 @@ const styles = StyleSheet.create({
   },
   commitBtnTextOff: {
     color: Colors.textMuted,
+  },
+  saveRevertRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
+  saveBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: Colors.accentPrimary,
+    paddingVertical: 9,
+    borderRadius: Radius.sm,
+    ...Shadows.glow,
+  },
+  revertBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: Colors.bgTertiary,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: Colors.accentWarning + "44",
   },
 
   // Overlay + tree drawer
