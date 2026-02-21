@@ -1,88 +1,550 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  Switch,
+  Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  GitCommit, GitBranch, GitMerge, Star, Clock,
-  Mail, MapPin, Edit3, ChevronRight, Moon, Bell,
-  Shield, Key, Info, LogOut, Zap, Code2,
+  GitCommit, GitBranch, GitMerge, Clock,
+  Mail, MapPin, Edit3, LogOut, Code2, User,
 } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Spacing, Radius, Shadows } from '@/constants/theme';
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+const SCREEN_W = Dimensions.get('window').width;
+const CELL     = 11;
+const CELL_GAP = 2;
+const COL_W    = CELL + CELL_GAP;
+const DAY_LABEL_W = 28;
+
+// ─── Mock user ────────────────────────────────────────────────────────────────
 
 const MOCK_USER = {
-  name: 'Sarah Chen',
-  username: 'sarahchen',
-  email: 'sarah@gitlane.dev',
-  location: 'San Francisco, CA',
-  bio: 'Mobile engineer & open-source enthusiast. Building offline-first tools.',
-  initials: 'SC',
-  avatarColor: '#22C55E',
+  name:       'Harshal Shah',
+  username:   'HarshalShah2005',
+  email:      'harshal@gitlane.dev',
+  location:   'India',
+  bio:        'Mobile engineer & open-source enthusiast. Building offline-first tools.',
   joinedDate: 'Jan 2024',
+  linkedin:   'in/harshal-shah-60429a317',
 };
+
+// ─── KPI stats ────────────────────────────────────────────────────────────────
 
 const MOCK_STATS = [
-  { label: 'Commits',    value: '1,247', Icon: GitCommit,  color: Colors.accentPrimary },
-  { label: 'Repos',      value: '12',    Icon: Code2,      color: Colors.accentInfo },
-  { label: 'Branches',   value: '34',    Icon: GitBranch,  color: Colors.accentPurple },
-  { label: 'Merges',     value: '89',    Icon: GitMerge,   color: Colors.accentWarning },
+  { label: 'Commits',  value: '1,247', Icon: GitCommit, color: Colors.accentPrimary },
+  { label: 'Repos',    value: '12',    Icon: Code2,     color: Colors.accentInfo    },
+  { label: 'Branches', value: '34',    Icon: GitBranch, color: Colors.accentPurple  },
+  { label: 'Merges',   value: '89',    Icon: GitMerge,  color: Colors.accentWarning },
 ];
 
-const MOCK_ACTIVITY = [
-  { message: 'feat: implement P2P transfer',  repo: 'gitlane-app',      time: '2h ago',   color: Colors.accentPrimary },
-  { message: 'fix: resolve binary conflicts', repo: 'react-native-git', time: '5h ago',   color: Colors.accentDanger },
-  { message: 'refactor: git object parsing',  repo: 'gitlane-app',      time: '2d ago',   color: Colors.accentInfo },
-  { message: 'feat: syntax highlighting',     repo: 'portfolio-site',   time: '3d ago',   color: Colors.accentPurple },
-  { message: 'chore: update dependencies',    repo: 'rust-cli-tools',   time: '1w ago',   color: Colors.accentWarning },
-];
+// ─── Contribution data ────────────────────────────────────────────────────────
 
-const MOCK_STARRED = [
-  { name: 'gitlane-app',        lang: 'TypeScript', stars: 342 },
-  { name: 'react-native-git',   lang: 'TypeScript', stars: 128 },
-  { name: 'rust-cli-tools',     lang: 'Rust',       stars: 56  },
-];
+type ContribMap = Record<string, number>;
 
-const LANG_COLORS: Record<string, string> = {
-  TypeScript: '#3B82F6',
-  Rust:       '#F97316',
-  Python:     '#22C55E',
-  JavaScript: '#EAB308',
+const CONTRIBS_2025: ContribMap = {
+  '2025-04-07': 3, '2025-04-08': 1, '2025-04-14': 2,
+  '2025-08-12': 1,
+  '2025-10-13': 2, '2025-10-14': 1,
+  '2025-10-27': 3, '2025-10-28': 5, '2025-10-29': 4, '2025-10-30': 2,
+  '2025-11-03': 6, '2025-11-04': 4, '2025-11-05': 3, '2025-11-06': 2,
+  '2025-11-10': 5, '2025-11-11': 7, '2025-11-12': 3,
+  '2025-11-17': 8, '2025-11-18': 5, '2025-11-19': 4,
+  '2025-11-24': 3, '2025-11-25': 2,
+  '2025-12-01': 5, '2025-12-02': 3, '2025-12-08': 4,
+  '2025-12-15': 2, '2025-12-22': 1, '2025-12-25': 1,
 };
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+const CONTRIBS_2024: ContribMap = {
+  '2024-01-15': 2, '2024-02-03': 3, '2024-02-18': 1,
+  '2024-03-10': 4, '2024-03-11': 5, '2024-03-25': 2,
+  '2024-04-08': 3, '2024-05-12': 2, '2024-06-20': 4,
+  '2024-07-04': 1, '2024-08-14': 3, '2024-08-15': 2,
+  '2024-09-05': 5, '2024-09-06': 3, '2024-10-10': 2,
+  '2024-11-11': 4, '2024-12-05': 1, '2024-12-24': 3,
+};
 
-function SectionHeader({ title }: { title: string }) {
+const CONTRIBS_2026: ContribMap = {
+  '2026-01-05': 2, '2026-01-06': 3, '2026-01-20': 1,
+  '2026-02-03': 4, '2026-02-04': 5, '2026-02-10': 2,
+};
+
+const CONTRIB_MAPS: Record<number, ContribMap> = {
+  2024: CONTRIBS_2024,
+  2025: CONTRIBS_2025,
+  2026: CONTRIBS_2026,
+};
+
+function totalContribs(map: ContribMap) {
+  return Object.values(map).reduce((a, b) => a + b, 0);
+}
+
+// ─── Activity data per date ───────────────────────────────────────────────────
+
+interface Activity {
+  type:   'commit' | 'repo';
+  msg:    string;
+  repo:   string;
+  detail: string;
+  date:   string;
+}
+
+const DATE_ACTIVITIES: Record<string, Activity[]> = {
+  '2025-10-28': [
+    { type: 'commit', msg: 'Created 5 commits in 1 repository',
+      repo: 'traveller318/mini-project', detail: '5 commits', date: 'Oct 28' },
+  ],
+  '2025-12-01': [
+    { type: 'commit', msg: 'Created 5 commits in 1 repository',
+      repo: 'HarshalShah2005/portfolio', detail: '5 commits', date: 'Dec 1' },
+  ],
+  '2025-12-25': [
+    { type: 'repo', msg: 'Created 1 repository',
+      repo: 'HarshalShah2005/portfolio', detail: 'TypeScript', date: 'Dec 25' },
+  ],
+  '2025-11-17': [
+    { type: 'commit', msg: 'Created 8 commits in 2 repositories',
+      repo: 'HarshalShah2005/gitlane-app', detail: '6 commits', date: 'Nov 17' },
+    { type: 'commit', msg: '',
+      repo: 'HarshalShah2005/react-native-git', detail: '2 commits', date: 'Nov 17' },
+  ],
+  '2025-11-11': [
+    { type: 'commit', msg: 'Created 7 commits in 1 repository',
+      repo: 'HarshalShah2005/gitlane-app', detail: '7 commits', date: 'Nov 11' },
+  ],
+};
+
+const ALL_RECENT_ACTIVITY: Activity[] = [
+  { type: 'commit', msg: 'Created 5 commits in 1 repository',
+    repo: 'HarshalShah2005/portfolio',         detail: '5 commits', date: 'Dec 1'  },
+  { type: 'commit', msg: 'Created 8 commits in 2 repositories',
+    repo: 'HarshalShah2005/gitlane-app',       detail: '6 commits', date: 'Nov 17' },
+  { type: 'commit', msg: 'Created 7 commits in 1 repository',
+    repo: 'HarshalShah2005/gitlane-app',       detail: '7 commits', date: 'Nov 11' },
+  { type: 'commit', msg: 'Created 5 commits in 1 repository',
+    repo: 'traveller318/mini-project',          detail: '5 commits', date: 'Oct 28' },
+  { type: 'repo',   msg: 'Created 1 repository',
+    repo: 'HarshalShah2005/portfolio',          detail: 'TypeScript', date: 'Dec 25' },
+];
+
+// ─── Calendar helpers ─────────────────────────────────────────────────────────
+
+function toDateStr(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DAY_NAMES   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+interface WeekData {
+  days: { dateStr: string; count: number; month: number }[];
+  monthLabel: string | null; // show month label at top of this column
+}
+
+function buildWeeks(year: number, map: ContribMap): WeekData[] {
+  // Start from the first Sunday on or before Jan 1
+  const jan1   = new Date(year, 0, 1);
+  const start  = new Date(jan1);
+  start.setDate(jan1.getDate() - jan1.getDay());
+
+  const dec31  = new Date(year, 11, 31);
+  const end    = new Date(dec31);
+  end.setDate(dec31.getDate() + (6 - dec31.getDay()));
+
+  const weeks: WeekData[] = [];
+  const cur = new Date(start);
+  let lastMonth = -1;
+
+  while (cur <= end) {
+    const days = [];
+    for (let d = 0; d < 7; d++) {
+      const ds    = toDateStr(cur);
+      const count = map[ds] ?? 0;
+      days.push({ dateStr: ds, count, month: cur.getMonth() });
+      cur.setDate(cur.getDate() + 1);
+    }
+    // show month label on Sunday of that week if month changed
+    const firstOfWeekMonth = days[0].month;
+    const label = (firstOfWeekMonth !== lastMonth && days[0].dateStr.startsWith(String(year)))
+      ? MONTH_NAMES[firstOfWeekMonth]
+      : null;
+    if (label) lastMonth = firstOfWeekMonth;
+    weeks.push({ days, monthLabel: label });
+  }
+  return weeks;
+}
+
+function cellColor(count: number) {
+  if (count === 0) return '#1A1F23';
+  if (count <= 2)  return 'rgba(34,197,94,0.25)';
+  if (count <= 4)  return 'rgba(34,197,94,0.45)';
+  if (count <= 7)  return 'rgba(34,197,94,0.70)';
+  return Colors.accentPrimary;
+}
+
+function formatDisplayDate(dateStr: string) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return `${MONTH_NAMES[m - 1]} ${d}, ${y}`;
+}
+
+// ─── Avatar (generic person silhouette) ──────────────────────────────────────
+
+function PersonAvatar({ size = 80 }: { size?: number }) {
+  const headR  = size * 0.22;
+  const bodyW  = size * 0.54;
+  const bodyH  = size * 0.28;
+  const bodyY  = size * 0.54;
   return (
-    <View style={sec.header}>
-      <Text style={sec.title}>{title}</Text>
+    <View style={[avatarSt.circle, {
+      width: size, height: size, borderRadius: size / 2,
+      backgroundColor: '#3A3F47',
+    }]}>
+      {/* head */}
+      <View style={{
+        width:  headR * 2, height: headR * 2,
+        borderRadius: headR,
+        backgroundColor: '#9AA3AF',
+        position: 'absolute',
+        top: size * 0.16,
+        alignSelf: 'center',
+      }} />
+      {/* body arc */}
+      <View style={{
+        width:  bodyW, height: bodyH + bodyW / 2,
+        borderTopLeftRadius:  bodyW / 2,
+        borderTopRightRadius: bodyW / 2,
+        backgroundColor: '#9AA3AF',
+        position: 'absolute',
+        bottom: 0,
+        alignSelf: 'center',
+      }} />
     </View>
   );
 }
 
-function SettingRow({
-  Icon, label, sublabel, onPress, right,
+const avatarSt = StyleSheet.create({
+  circle: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+});
+
+// ─── Contribution Heatmap ─────────────────────────────────────────────────────
+
+function ContributionHeatmap({
+  year, onYearChange, contribMap, selectedDate, onSelectDate,
 }: {
-  Icon: typeof Mail;
-  label: string;
-  sublabel?: string;
-  onPress?: () => void;
-  right?: React.ReactNode;
+  year:          number;
+  onYearChange:  (y: number) => void;
+  contribMap:    ContribMap;
+  selectedDate:  string | null;
+  onSelectDate:  (d: string | null) => void;
+}) {
+  const weeks  = useMemo(() => buildWeeks(year, contribMap), [year, contribMap]);
+  const total  = useMemo(() => totalContribs(contribMap), [contribMap]);
+  const years  = [2024, 2025, 2026];
+
+  return (
+    <View style={hm.wrapper}>
+      {/* title + year selector */}
+      <View style={hm.topRow}>
+        <Text style={hm.totalText}>
+          <Text style={hm.totalNum}>{total}</Text> contributions in {year}
+        </Text>
+        <View style={hm.yearPicker}>
+          {years.map(y => (
+            <TouchableOpacity
+              key={y}
+              style={[hm.yearBtn, y === year && hm.yearBtnActive]}
+              onPress={() => { onYearChange(y); onSelectDate(null); }}
+            >
+              <Text style={[hm.yearBtnText, y === year && hm.yearBtnTextActive]}>{y}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      {/* calendar grid */}
+      <View style={hm.gridOuter}>
+        {/* day-of-week labels */}
+        <View style={hm.dayLabels}>
+          {['', 'Mon', '', 'Wed', '', 'Fri', ''].map((d, i) => (
+            <Text key={i} style={hm.dayLabel}>{d}</Text>
+          ))}
+        </View>
+
+        {/* weeks scroll */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row' }}>
+            {/* month labels row */}
+            <View style={{ flexDirection: 'row', position: 'absolute', top: 0, left: 0 }}>
+              {weeks.map((w, wi) => (
+                <View key={wi} style={{ width: COL_W }}>
+                  {w.monthLabel
+                    ? <Text style={hm.monthLabel}>{w.monthLabel}</Text>
+                    : <View style={{ height: 14 }} />}
+                </View>
+              ))}
+            </View>
+
+            {/* cells */}
+            <View style={{ flexDirection: 'row', marginTop: 16 }}>
+              {weeks.map((w, wi) => (
+                <View key={wi} style={hm.weekCol}>
+                  {w.days.map((day, di) => {
+                    const inYear  = day.dateStr.startsWith(String(year));
+                    const isSelected = day.dateStr === selectedDate;
+                    return (
+                      <TouchableOpacity
+                        key={di}
+                        style={[
+                          hm.cell,
+                          { backgroundColor: inYear ? cellColor(day.count) : '#0E1115' },
+                          isSelected && hm.cellSelected,
+                        ]}
+                        onPress={() => {
+                          if (!inYear || day.count === 0) { onSelectDate(null); return; }
+                          onSelectDate(isSelected ? null : day.dateStr);
+                        }}
+                        activeOpacity={0.7}
+                      />
+                    );
+                  })}
+                </View>
+              ))}
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+
+      {/* legend */}
+      <View style={hm.legend}>
+        <Text style={hm.legendLabel}>Less</Text>
+        {['#1A1F23','rgba(34,197,94,0.25)','rgba(34,197,94,0.45)','rgba(34,197,94,0.70)', Colors.accentPrimary].map((c, i) => (
+          <View key={i} style={[hm.legendCell, { backgroundColor: c }]} />
+        ))}
+        <Text style={hm.legendLabel}>More</Text>
+      </View>
+    </View>
+  );
+}
+
+const hm = StyleSheet.create({
+  wrapper: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.md,
+    backgroundColor: Colors.bgSecondary,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.borderDefault,
+    padding: Spacing.md,
+  },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.sm,
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  totalText: { fontSize: 13, color: Colors.textSecondary },
+  totalNum:  { fontWeight: '700', color: Colors.textPrimary },
+  yearPicker:    { flexDirection: 'row', gap: 4 },
+  yearBtn:       {
+    paddingHorizontal: 10, paddingVertical: 4,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.bgTertiary,
+    borderWidth: 1, borderColor: Colors.borderDefault,
+  },
+  yearBtnActive: { backgroundColor: Colors.accentPrimary, borderColor: Colors.accentPrimary },
+  yearBtnText:       { fontSize: 12, color: Colors.textMuted, fontWeight: '500' },
+  yearBtnTextActive: { color: '#fff', fontWeight: '700' },
+  gridOuter: { flexDirection: 'row' },
+  dayLabels: { width: DAY_LABEL_W, marginTop: 16 },
+  dayLabel:  { height: COL_W, fontSize: 9, color: Colors.textMuted, textAlignVertical: 'center' },
+  monthLabel:{ height: 14, fontSize: 9, color: Colors.textMuted },
+  weekCol: { flexDirection: 'column', marginRight: CELL_GAP },
+  cell: {
+    width: CELL, height: CELL,
+    borderRadius: 2,
+    marginBottom: CELL_GAP,
+  },
+  cellSelected: {
+    borderWidth: 1.5,
+    borderColor: Colors.accentPrimary,
+  },
+  legend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: Spacing.sm,
+    justifyContent: 'flex-end',
+  },
+  legendLabel: { fontSize: 10, color: Colors.textMuted },
+  legendCell:  { width: 10, height: 10, borderRadius: 2 },
+});
+
+// ─── Contribution Activity ────────────────────────────────────────────────────
+
+function ContributionActivity({
+  selectedDate, year,
+}: {
+  selectedDate: string | null;
+  year: number;
+}) {
+  const items: Activity[] = selectedDate
+    ? (DATE_ACTIVITIES[selectedDate] ?? [])
+    : ALL_RECENT_ACTIVITY.filter(a => a.date.includes(String(year).slice(2)));
+
+  const displayItems = selectedDate ? items : ALL_RECENT_ACTIVITY;
+  const heading = selectedDate
+    ? formatDisplayDate(selectedDate)
+    : 'Contribution activity';
+
+  return (
+    <View style={{ marginHorizontal: Spacing.md, marginBottom: Spacing.md }}>
+      <Text style={ca.heading}>{heading}</Text>
+
+      {displayItems.length === 0 && (
+        <View style={ca.emptyBox}>
+          <Text style={ca.emptyText}>No contributions on this day.</Text>
+        </View>
+      )}
+
+      {displayItems.map((item, i) => (
+        <View key={i} style={ca.card}>
+          <View style={ca.iconCol}>
+            <View style={ca.iconCircle}>
+              <GitCommit size={13} color={Colors.accentPrimary} />
+            </View>
+            {i < displayItems.length - 1 && <View style={ca.line} />}
+          </View>
+          <View style={ca.body}>
+            {item.msg ? <Text style={ca.msg}>{item.msg}</Text> : null}
+            <TouchableOpacity>
+              <Text style={ca.repo}>{item.repo}</Text>
+            </TouchableOpacity>
+            <View style={ca.metaRow}>
+              {item.type === 'repo' && (
+                <View style={ca.langDot} />
+              )}
+              <Text style={ca.detail}>{item.detail}</Text>
+              <View style={ca.bar}>
+                <View style={[ca.barFill, {
+                  width: `${Math.min(100, (parseInt(item.detail) || 1) * 15)}%` as any,
+                }]} />
+              </View>
+              <Text style={ca.dateLabel}>{item.date}</Text>
+            </View>
+          </View>
+        </View>
+      ))}
+
+      <TouchableOpacity style={ca.showMore} activeOpacity={0.7}>
+        <Text style={ca.showMoreText}>Show more activity</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const ca = StyleSheet.create({
+  heading: {
+    fontSize: 15, fontWeight: '600', color: Colors.textPrimary,
+    marginBottom: Spacing.sm,
+  },
+  emptyBox: {
+    backgroundColor: Colors.bgSecondary,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.borderDefault,
+  },
+  emptyText: { fontSize: 13, color: Colors.textMuted, textAlign: 'center' },
+  card: {
+    flexDirection: 'row',
+    backgroundColor: Colors.bgSecondary,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.borderDefault,
+    marginBottom: Spacing.sm,
+    padding: Spacing.md,
+    gap: 10,
+  },
+  iconCol: { alignItems: 'center' },
+  iconCircle: {
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: Colors.accentPrimaryDim,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  line: { flex: 1, width: 1, backgroundColor: Colors.borderMuted, marginTop: 4 },
+  body: { flex: 1 },
+  msg:  { fontSize: 13, fontWeight: '600', color: Colors.textPrimary, marginBottom: 3 },
+  repo: { fontSize: 12, color: Colors.accentInfo, marginBottom: 5 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  langDot: {
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: Colors.accentInfo,
+  },
+  detail: { fontSize: 11, color: Colors.textSecondary },
+  bar: {
+    flex: 1, height: 5,
+    backgroundColor: Colors.bgTertiary,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  barFill: { height: '100%', backgroundColor: Colors.accentPrimary, borderRadius: 3 },
+  dateLabel: { fontSize: 11, color: Colors.textMuted },
+  showMore: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.borderDefault,
+    borderRadius: Radius.sm,
+    paddingVertical: 10,
+    alignItems: 'center',
+    backgroundColor: Colors.bgSecondary,
+    marginTop: 4,
+  },
+  showMoreText: { fontSize: 13, color: Colors.accentInfo, fontWeight: '500' },
+});
+
+// ─── Selected day banner ──────────────────────────────────────────────────────
+
+function DayBanner({ dateStr, count, onClear }: {
+  dateStr: string; count: number; onClear: () => void;
 }) {
   return (
-    <TouchableOpacity style={row.container} onPress={onPress} activeOpacity={onPress ? 0.6 : 1}>
-      <View style={row.iconWrap}>
-        <Icon size={17} color={Colors.textSecondary} />
-      </View>
-      <View style={row.content}>
-        <Text style={row.label}>{label}</Text>
-        {sublabel && <Text style={row.sublabel}>{sublabel}</Text>}
-      </View>
-      {right ?? <ChevronRight size={15} color={Colors.textMuted} />}
-    </TouchableOpacity>
+    <View style={banner.row}>
+      <View style={banner.dot} />
+      <Text style={banner.text}>
+        <Text style={banner.count}>{count}</Text>
+        {` contribution${count !== 1 ? 's' : ''} on ${formatDisplayDate(dateStr)}`}
+      </Text>
+      <TouchableOpacity onPress={onClear} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+        <Text style={banner.clear}>✕</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+const banner = StyleSheet.create({
+  row: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: Spacing.md, marginBottom: Spacing.sm,
+    backgroundColor: Colors.accentPrimaryDim,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.md, paddingVertical: 8,
+    borderWidth: 1, borderColor: Colors.accentPrimary,
+  },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.accentPrimary },
+  text: { flex: 1, fontSize: 12, color: Colors.textSecondary },
+  count: { fontWeight: '700', color: Colors.accentPrimary },
+  clear: { fontSize: 12, color: Colors.textMuted },
+});
+
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <View style={{ paddingHorizontal: Spacing.md, paddingBottom: 6, paddingTop: Spacing.sm }}>
+      <Text style={{
+        fontSize: 11, fontWeight: '700', color: Colors.textMuted,
+        textTransform: 'uppercase', letterSpacing: 0.8,
+      }}>{title}</Text>
+    </View>
   );
 }
 
@@ -90,59 +552,63 @@ function SettingRow({
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
-  const [darkMode,       setDarkMode]       = useState(true);
-  const [notifications,  setNotifications]  = useState(true);
-  const [autoFetch,      setAutoFetch]      = useState(false);
+  const [year,          setYear]          = useState(2025);
+  const [selectedDate,  setSelectedDate]  = useState<string | null>(null);
+
+
+  const contribMap = CONTRIB_MAPS[year];
+  const selectedCount = selectedDate ? (contribMap[selectedDate] ?? 0) : 0;
 
   return (
     <ScrollView
       style={[styles.root, { paddingTop: insets.top }]}
       showsVerticalScrollIndicator={false}
-      contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+      contentContainerStyle={{ paddingBottom: insets.bottom + 32 }}
     >
-      {/* ── Header ──────────────────────────────────────────────── */}
+      {/* ── PAGE HEADER ─────────────────────────────────────────── */}
       <View style={styles.headerBar}>
         <Text style={styles.headerTitle}>Profile</Text>
         <TouchableOpacity style={styles.editBtn} activeOpacity={0.7}>
-          <Edit3 size={17} color={Colors.accentPrimary} />
+          <Edit3 size={16} color={Colors.accentPrimary} />
         </TouchableOpacity>
       </View>
 
-      {/* ── Avatar card ─────────────────────────────────────────── */}
-      <View style={styles.avatarCard}>
-        <View style={[styles.avatar, { backgroundColor: MOCK_USER.avatarColor }]}>
-          <Text style={styles.avatarInitials}>{MOCK_USER.initials}</Text>
-          <View style={styles.avatarBadge}>
-            <Zap size={10} color="#fff" fill="#fff" />
-          </View>
-        </View>
+      {/* ── PROFILE CARD ────────────────────────────────────────── */}
+      <View style={styles.profileCard}>
+        <PersonAvatar size={86} />
 
-        <Text style={styles.displayName}>{MOCK_USER.name}</Text>
-        <Text style={styles.username}>@{MOCK_USER.username}</Text>
-        <Text style={styles.bio}>{MOCK_USER.bio}</Text>
+        <View style={styles.profileInfo}>
+          <Text style={styles.displayName}>{MOCK_USER.name}</Text>
+          <Text style={styles.username}>{MOCK_USER.username}</Text>
+          <Text style={styles.bio}>{MOCK_USER.bio}</Text>
 
-        <View style={styles.metaRow}>
-          <View style={styles.metaItem}>
-            <Mail size={13} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{MOCK_USER.email}</Text>
+          <View style={styles.metaList}>
+            <View style={styles.metaItem}>
+              <Mail size={12} color={Colors.textMuted} />
+              <Text style={styles.metaText}>{MOCK_USER.email}</Text>
+            </View>
+            <View style={styles.metaItem}>
+              <MapPin size={12} color={Colors.textMuted} />
+              <Text style={styles.metaText}>{MOCK_USER.location}</Text>
+            </View>
+            <View style={styles.metaItem}>
+              <Clock size={12} color={Colors.textMuted} />
+              <Text style={styles.metaText}>Joined {MOCK_USER.joinedDate}</Text>
+            </View>
           </View>
-          <View style={styles.metaItem}>
-            <MapPin size={13} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{MOCK_USER.location}</Text>
-          </View>
-          <View style={styles.metaItem}>
-            <Clock size={13} color={Colors.textMuted} />
-            <Text style={styles.metaText}>Joined {MOCK_USER.joinedDate}</Text>
-          </View>
+
+          <TouchableOpacity style={styles.editProfileBtn} activeOpacity={0.7}>
+            <Text style={styles.editProfileText}>Edit profile</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
-      {/* ── Stats ───────────────────────────────────────────────── */}
+      {/* ── KPI STATS ───────────────────────────────────────────── */}
       <View style={styles.statsGrid}>
         {MOCK_STATS.map(({ label, value, Icon, color }) => (
           <View key={label} style={styles.statCard}>
             <View style={[styles.statIconWrap, { backgroundColor: `${color}18` }]}>
-              <Icon size={18} color={color} />
+              <Icon size={17} color={color} />
             </View>
             <Text style={styles.statValue}>{value}</Text>
             <Text style={styles.statLabel}>{label}</Text>
@@ -150,111 +616,35 @@ export default function ProfileScreen() {
         ))}
       </View>
 
-      {/* ── Recent Activity ─────────────────────────────────────── */}
-      <SectionHeader title="Recent Activity" />
-      <View style={styles.card}>
-        {MOCK_ACTIVITY.map((item, i) => (
-          <View
-            key={i}
-            style={[styles.activityRow, i < MOCK_ACTIVITY.length - 1 && styles.activityDivider]}
-          >
-            <View style={[styles.activityDot, { backgroundColor: item.color }]} />
-            <View style={styles.activityContent}>
-              <Text style={styles.activityMessage} numberOfLines={1}>{item.message}</Text>
-              <Text style={styles.activityMeta}>{item.repo} · {item.time}</Text>
-            </View>
-          </View>
-        ))}
-      </View>
+      {/* ── CONTRIBUTION CALENDAR ───────────────────────────────── */}
+      <SectionHeader title="Contributions" />
+      <ContributionHeatmap
+        year={year}
+        onYearChange={setYear}
+        contribMap={contribMap}
+        selectedDate={selectedDate}
+        onSelectDate={setSelectedDate}
+      />
 
-      {/* ── Starred Repos ───────────────────────────────────────── */}
-      <SectionHeader title="Starred Repos" />
-      <View style={styles.card}>
-        {MOCK_STARRED.map((repo, i) => (
-          <TouchableOpacity
-            key={i}
-            style={[styles.repoRow, i < MOCK_STARRED.length - 1 && styles.activityDivider]}
-            activeOpacity={0.6}
-          >
-            <Star size={15} color={Colors.accentWarning} fill={Colors.accentWarning} />
-            <View style={styles.repoContent}>
-              <Text style={styles.repoName}>{repo.name}</Text>
-              <View style={styles.repoMeta}>
-                <View style={[styles.langDot, { backgroundColor: LANG_COLORS[repo.lang] ?? Colors.textMuted }]} />
-                <Text style={styles.repoMetaText}>{repo.lang}</Text>
-                <Text style={styles.repoMetaText}>·</Text>
-                <Star size={11} color={Colors.textMuted} />
-                <Text style={styles.repoMetaText}>{repo.stars}</Text>
-              </View>
-            </View>
-            <ChevronRight size={14} color={Colors.textMuted} />
-          </TouchableOpacity>
-        ))}
-      </View>
+      {/* ── SELECTED DAY BANNER ─────────────────────────────────── */}
+      {selectedDate && selectedCount > 0 && (
+        <DayBanner
+          dateStr={selectedDate}
+          count={selectedCount}
+          onClear={() => setSelectedDate(null)}
+        />
+      )}
 
-      {/* ── Preferences ─────────────────────────────────────────── */}
-      <SectionHeader title="Preferences" />
-      <View style={styles.card}>
-        <SettingRow
-          Icon={Moon}
-          label="Dark Mode"
-          sublabel="Always on dark theme"
-          right={
-            <Switch
-              value={darkMode}
-              onValueChange={setDarkMode}
-              trackColor={{ false: Colors.bgTertiary, true: Colors.accentPrimary }}
-              thumbColor="#fff"
-              ios_backgroundColor={Colors.bgTertiary}
-            />
-          }
-        />
-        <View style={styles.rowDivider} />
-        <SettingRow
-          Icon={Bell}
-          label="Notifications"
-          sublabel="Commit and sync alerts"
-          right={
-            <Switch
-              value={notifications}
-              onValueChange={setNotifications}
-              trackColor={{ false: Colors.bgTertiary, true: Colors.accentPrimary }}
-              thumbColor="#fff"
-              ios_backgroundColor={Colors.bgTertiary}
-            />
-          }
-        />
-        <View style={styles.rowDivider} />
-        <SettingRow
-          Icon={Zap}
-          label="Auto Fetch"
-          sublabel="Fetch remotes on app open"
-          right={
-            <Switch
-              value={autoFetch}
-              onValueChange={setAutoFetch}
-              trackColor={{ false: Colors.bgTertiary, true: Colors.accentPrimary }}
-              thumbColor="#fff"
-              ios_backgroundColor={Colors.bgTertiary}
-            />
-          }
-        />
-      </View>
+      {/* ── CONTRIBUTION ACTIVITY ───────────────────────────────── */}
+      <ContributionActivity selectedDate={selectedDate} year={year} />
 
-      {/* ── Account ─────────────────────────────────────────────── */}
-      <SectionHeader title="Account" />
-      <View style={styles.card}>
-        <SettingRow Icon={Key}    label="SSH Keys"          sublabel="Manage authentication keys" />
-        <View style={styles.rowDivider} />
-        <SettingRow Icon={Shield} label="Security"          sublabel="Two-factor authentication" />
-        <View style={styles.rowDivider} />
-        <SettingRow Icon={Info}   label="About GitLane"     sublabel="Version 1.0.0" />
-        <View style={styles.rowDivider} />
-        <TouchableOpacity style={[styles.row, styles.signOutRow]} activeOpacity={0.6}>
+      {/* ── ACCOUNT ─────────────────────────────────────────────── */}
+      <View style={[styles.card, { marginHorizontal: Spacing.md, marginBottom: Spacing.lg }]}>
+        <TouchableOpacity style={styles.signOutRow} activeOpacity={0.6}>
           <View style={[styles.rowIconWrap, { backgroundColor: `${Colors.accentDanger}18` }]}>
-            <LogOut size={17} color={Colors.accentDanger} />
+            <LogOut size={16} color={Colors.accentDanger} />
           </View>
-          <Text style={[styles.rowLabel, { color: Colors.accentDanger }]}>Sign Out</Text>
+          <Text style={[styles.rowLabel, { color: Colors.accentDanger, flex: 1 }]}>Sign Out</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>
@@ -264,293 +654,94 @@ export default function ProfileScreen() {
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: Colors.bgPrimary,
-  },
+  root: { flex: 1, backgroundColor: Colors.bgPrimary },
+
   headerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.md,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.md,
   },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
+  headerTitle: { fontSize: 28, fontWeight: '700', color: Colors.textPrimary },
   editBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: Radius.sm,
+    width: 36, height: 36, borderRadius: Radius.sm,
     backgroundColor: Colors.bgTertiary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: Colors.borderDefault,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: Colors.borderDefault,
   },
 
-  // Avatar card
-  avatarCard: {
-    alignItems: 'center',
-    marginHorizontal: Spacing.md,
-    marginBottom: Spacing.md,
+  // Profile card
+  profileCard: {
+    flexDirection: 'row',
+    marginHorizontal: Spacing.md, marginBottom: Spacing.md,
     backgroundColor: Colors.bgSecondary,
     borderRadius: Radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.borderDefault,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: Colors.borderDefault,
+    padding: Spacing.md,
+    gap: Spacing.md,
+    alignItems: 'flex-start',
   },
-  avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: Spacing.md,
-    ...Shadows.glow,
-  },
-  avatarInitials: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  avatarBadge: {
-    position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: Colors.accentPrimary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: Colors.bgSecondary,
-  },
-  displayName: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginBottom: 2,
-  },
-  username: {
-    fontSize: 14,
-    color: Colors.accentPrimary,
-    fontWeight: '500',
-    marginBottom: Spacing.sm,
-  },
+  profileInfo:  { flex: 1 },
+  displayName:  { fontSize: 18, fontWeight: '700', color: Colors.textPrimary, marginBottom: 1 },
+  username:     { fontSize: 13, color: Colors.textSecondary, marginBottom: 6 },
   bio: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 19,
-    marginBottom: Spacing.md,
+    fontSize: 12, color: Colors.textSecondary,
+    lineHeight: 17, marginBottom: 8,
   },
-  metaRow: {
-    gap: 6,
-    alignItems: 'center',
+  metaList: { gap: 4, marginBottom: 10 },
+  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  metaText: { fontSize: 11, color: Colors.textMuted },
+  editProfileBtn: {
+    borderWidth: 1, borderColor: Colors.borderDefault,
+    borderRadius: Radius.sm, paddingVertical: 6, paddingHorizontal: 12,
+    alignSelf: 'flex-start',
   },
-  metaItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  metaText: {
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
+  editProfileText: { fontSize: 12, color: Colors.textPrimary, fontWeight: '500' },
 
   // Stats grid
   statsGrid: {
     flexDirection: 'row',
-    marginHorizontal: Spacing.md,
-    marginBottom: Spacing.md,
+    marginHorizontal: Spacing.md, marginBottom: Spacing.md,
     gap: Spacing.sm,
   },
   statCard: {
-    flex: 1,
-    backgroundColor: Colors.bgSecondary,
+    flex: 1, backgroundColor: Colors.bgSecondary,
     borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.borderDefault,
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-    gap: 4,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: Colors.borderDefault,
+    alignItems: 'center', paddingVertical: Spacing.sm + 2, gap: 3,
   },
   statIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 2,
+    width: 32, height: 32, borderRadius: Radius.sm,
+    alignItems: 'center', justifyContent: 'center', marginBottom: 1,
   },
-  statValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
+  statValue: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
   statLabel: {
-    fontSize: 10,
-    color: Colors.textMuted,
-    fontWeight: '500',
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
+    fontSize: 9, color: Colors.textMuted,
+    fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.3,
   },
 
-  // Card wrapper
+  // Card
   card: {
-    marginHorizontal: Spacing.md,
-    marginBottom: Spacing.md,
+    marginHorizontal: Spacing.md, marginBottom: Spacing.md,
     backgroundColor: Colors.bgSecondary,
     borderRadius: Radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.borderDefault,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: Colors.borderDefault,
     overflow: 'hidden',
   },
-
-  // Activity
-  activityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 12,
-    gap: 12,
-  },
-  activityDivider: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.borderMuted,
-  },
-  activityDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    flexShrink: 0,
-  },
-  activityContent: {
-    flex: 1,
-  },
-  activityMessage: {
-    fontSize: 13,
-    color: Colors.textPrimary,
-    fontWeight: '500',
-  },
-  activityMeta: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    marginTop: 2,
-  },
-
-  // Starred repos
-  repoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 12,
-    gap: 10,
-  },
-  repoContent: {
-    flex: 1,
-  },
-  repoName: {
-    fontSize: 13,
-    color: Colors.textPrimary,
-    fontWeight: '500',
-  },
-  repoMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 2,
-  },
-  langDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  repoMetaText: {
-    fontSize: 11,
-    color: Colors.textMuted,
-  },
-
-  // Setting rows
   rowDivider: {
     height: StyleSheet.hairlineWidth,
     backgroundColor: Colors.borderMuted,
     marginLeft: Spacing.md + 36,
   },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 13,
-    gap: 12,
+  signOutRow: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: Spacing.md, paddingVertical: 13, gap: 12,
   },
   rowIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 30, height: 30, borderRadius: Radius.sm,
+    alignItems: 'center', justifyContent: 'center',
     backgroundColor: Colors.bgTertiary,
   },
-  rowLabel: {
-    flex: 1,
-    fontSize: 14,
-    color: Colors.textPrimary,
-    fontWeight: '500',
-  },
-  signOutRow: {
-    // extra styling handled inline
-  },
+  rowLabel: { fontSize: 14, color: Colors.textPrimary, fontWeight: '500' },
 });
 
-const sec = StyleSheet.create({
-  header: {
-    paddingHorizontal: Spacing.md,
-    paddingBottom: Spacing.xs,
-    paddingTop: Spacing.sm,
-  },
-  title: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: Colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-});
 
-const row = StyleSheet.create({
-  container: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 13,
-    gap: 12,
-  },
-  iconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: Radius.sm,
-    backgroundColor: Colors.bgTertiary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  content: {
-    flex: 1,
-  },
-  label: {
-    fontSize: 14,
-    color: Colors.textPrimary,
-    fontWeight: '500',
-  },
-  sublabel: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    marginTop: 1,
-  },
-});
 

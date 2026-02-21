@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { GitBranch, GitGraph, QrCode, Settings, UserCircle } from "lucide-react-native";
+import { GitBranch, GitGraph, QrCode, Settings, User } from "lucide-react-native";
 import React from "react";
 import { Platform, View, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
@@ -50,7 +50,7 @@ export default function TabLayout() {
         name="profile"
         options={{
           title: "Profile",
-          tabBarIcon: ({ focused }) => <TabIcon Icon={UserCircle} focused={focused} />,
+          tabBarIcon: ({ focused }) => <TabIcon Icon={User} focused={focused} />,
         }}
       />
       <Tabs.Screen
