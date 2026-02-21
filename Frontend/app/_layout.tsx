@@ -37,6 +37,7 @@ function RootLayoutNav() {
         <Stack.Screen name="file-viewer" options={{ presentation: "fullScreenModal", headerShown: false }} />
         <Stack.Screen name="commit-detail" options={{ presentation: "modal", headerShown: false }} />
         <Stack.Screen name="merge-conflicts" options={{ presentation: "modal", headerShown: false }} />
+        <Stack.Screen name="chatbot" options={{ headerShown: false }} />
       </Stack>
       <ToastOverlay />
     </>
