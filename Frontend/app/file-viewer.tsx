@@ -16,6 +16,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
 import { Spacing, Radius, Shadows } from '@/constants/theme';
+import { useGit } from '@/contexts/GitContext';
 import { mockFiles } from '@/mocks/repositories';
 import type { GitFile } from '@/types/git';
 
@@ -37,6 +38,23 @@ const fileIconMap: Record<string, { Icon: typeof FileCode2; color: string }> = {
   rs:   { Icon: FileCode2, color: '#F97316' },
 };
 
+  const handleCreate = useCallback(async () => {
+    if (!isValid || creating) return;
+    setCreating(true);
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+
+    try {
+      await addRepository({ name: name.trim(), addReadme });
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+      router.dismiss();
+    } finally {
+      setCreating(false);
+    }
+  }, [isValid, creating, addRepository, name, addReadme, router]);
 function getFileIcon(ext?: string) {
   return fileIconMap[ext ?? ''] ?? { Icon: FileIcon, color: '#A3A3A3' };
 }

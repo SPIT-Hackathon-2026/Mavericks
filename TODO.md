@@ -2,12 +2,12 @@
 
 ## Project Definition
 - [ ] Finalize mobile Git system name (**GitLane**), vision, and guiding principles aligned with Problem Statement goals
-- [ ] Document key success metrics (offline reliability, merge handling accuracy, repo integrity, **app performance via MMKV caching**)
+- [ ] Document key success metrics (offline reliability, merge handling accuracy, repo integrity, **app performance via FS + AsyncStorage caching**)
 
 ## Repository Core **[P0 - Critical]**
-- [ ] Implement full offline Git backend (init, clone/import, commit, checkout, branch/tag creation, log, status) **using isomorphic-git**
-- [ ] Ensure repository storage remains compatible with desktop Git (objects, refs, config, hooks) **in File System**
-- [ ] Add atomic storage operations with crash recovery/**transaction logs (stored in MMKV)** to guard against corruption
+- [x] Implement full offline Git backend (init, clone/import, commit, checkout, branch/tag creation, log, status) **using isomorphic-git**
+- [x] Ensure repository storage remains compatible with desktop Git (objects, refs, config, hooks) **in File System**
+- [x] Add atomic storage operations with crash recovery/**transaction logs stored in .git** to guard against corruption
 - [ ] Provide repository health monitoring and auto-repair utilities (checksum/pack validation) **[Stretch]**
 
 ## Merge & Conflict Resolution **[P1 - High]**
@@ -26,17 +26,16 @@
 - [ ] Support advanced history search (semantic filters, natural language like "last release") **[P2 - AI Feature]**
 
 ## Mobile UX & Exploration **[P1 - High]**
-- [ ] Design touch-optimized staging workflow (file selection, hunks, staged vs unstaged)
+- [x] Design touch-optimized staging workflow (file selection, hunks, staged vs unstaged)
 - [ ] Present file diffs with syntax highlighting, inline edits, and code exploration links
 - [ ] Enable fast file search (name/contents) and navigation via quick diff view
 - [ ] Provide code reader mode with variable fonts/layout suitable for small screens
 - [ ] Add contextual tooltips and help for advanced Git actions (rebases, resets)
 
-## Performance & Storage **[Architecture Critical]**
-- [ ] Define the Git data hierarchy (blobs, trees, commits, refs) so it is managed entirely via the repository's File System (.git folder) with desktop compatibility.
-- [ ] Keep all app state (settings, identity, logs, recent recs) inside MMKV only and eliminate any SQLite dependency.
-- [ ] Record transaction logs in MMKV (e.g., "Started Merge", "Started Commit") for crash-safe recovery before/after P0 workflows.
-- [ ] Implement commit log caching in MMKV to power instant UI loads and invalidate on new commits or merges.
+- [x] Define the Git data hierarchy (blobs, trees, commits, refs) so it is managed entirely via the repository's File System (.git folder) with desktop compatibility.
+- [x] Git-aligned file system caching (AsyncStorage for settings/identity, .git/gitlane_cache.json for commits/graph data).
+- [x] Record transaction logs in .git (e.g., "Started Merge", "Started Commit") for crash-safe recovery before/after P0 workflows.
+- [x] Implement commit log caching in .git to power instant UI loads and invalidate on new commits or merges.
 - [ ] Optimize packfile handling and delta compression for large repos (>200MB) while profiling CPU and disk usage during long operations.
 - [ ] Stress-test storage on constrained mobile devices to ensure stable operation even with extensive histories.
 
@@ -51,7 +50,8 @@
 - [ ] **Fallback to Manual Mode** if API fails
 
 ## Additional Reliability & Quality
-- [ ] Add crash-safe storage with transaction logs and recovery prompts on restart **(MMKV Flags)**
+- [x] Native dependency cleanup (Expo Go-safe: AsyncStorage + File System)
+- [x] Add crash-safe storage with transaction logs and recovery prompts on restart **(.git flags)**
 - [ ] Provide repository health dashboard (warnings, corruption detection, repair suggestions)
 - [ ] Build automated tests for offline workflows, merges, rebases, and transfers
 - [ ] Document usage guides/onboarding for mobile Git workflows
@@ -63,8 +63,8 @@
 - [ ] **Demo Script:** Start Offline (Core) → Turn Online (AI) → P2P Transfer
 
 ## Important 
-- [ ] **Seeding Data:** Have a zip file or a "Demo Repo" ready to import instantly. Judges hate waiting for a 100MB clone during a 3-minute pitch.
-- [ ] **Pre-Seed Conflict:** Ensure the demo repo has a guaranteed merge conflict ready to show off the resolution UI.
+- [x] **Seeding Data:** Have a zip file or a "Demo Repo" ready to import instantly. Judges hate waiting for a 100MB clone during a 3-minute pitch.
+- [x] **Pre-Seed Conflict:** Ensure the demo repo has a guaranteed merge conflict ready to show off the resolution UI.
 - [ ] **Airplane Mode:** Test the entire P0/P1 flow in Airplane Mode before the demo.
 
 ---
@@ -75,3 +75,8 @@
 *   **[P2]**: Brownie points. Implement only if P0/P1 stable. (Hours 12-15)
 *   **[P3]**: Polish. Skip if time runs out. (Hours 15-18)
 *   **[Stretch]**: Nice to have. Only touch if everything else is perfect.
+
+Method,Effort,Implementation
+Git Bundles (Easiest),Low,Use isomorphic-git to create a .bundle file. Use the phone's native Share Sheet (Bluetooth/AirDrop/WhatsApp).
+QR Code (Small Repos),Medium,Convert a small patch or commit into a series of QR codes to be scanned by the other phone.
+Local Socket (Hardest),High,"Use react-native-tcp-socket to create a mini-server on one phone that the other phone ""clones"" from over the same Wi-Fi."

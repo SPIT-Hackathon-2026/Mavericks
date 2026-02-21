@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, Platform,
+  View, Text, StyleSheet, TouchableOpacity, Platform, TextInput, ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,10 +8,34 @@ import { X, FolderPlus, FolderDown } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
 import { Spacing, Radius } from '@/constants/theme';
+import { useGit } from '@/contexts/GitContext';
 
 export default function AddRepoModal() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { cloneRepository } = useGit();
+  const [showImportForm, setShowImportForm] = useState(false);
+  const [importUrl, setImportUrl] = useState('');
+  const [importName, setImportName] = useState('');
+  const [cloning, setCloning] = useState(false);
+
+  const handleStartImport = useCallback(async () => {
+    if (!importUrl.trim() || !importName.trim() || cloning) return;
+    setCloning(true);
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+    try {
+      await cloneRepository(importUrl.trim(), importName.trim());
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+      router.dismiss();
+    } catch {
+    } finally {
+      setCloning(false);
+    }
+  }, [importUrl, importName, cloning, cloneRepository, router]);
 
   const handleCreate = () => {
     if (Platform.OS !== 'web') {
@@ -39,21 +63,69 @@ export default function AddRepoModal() {
           <Text style={styles.optionSubtitle}>Initialize a fresh Git repository</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.optionCard, styles.optionCardSecondary]}
-          activeOpacity={0.7}
-          onPress={() => {
-            if (Platform.OS !== 'web') {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            }
-          }}
-        >
-          <View style={[styles.optionIconWrap, styles.optionIconWrapSecondary]}>
-            <FolderDown size={40} color={Colors.accentSecondary} />
+        {!showImportForm ? (
+          <TouchableOpacity
+            style={[styles.optionCard, styles.optionCardSecondary]}
+            activeOpacity={0.7}
+            onPress={() => {
+              if (Platform.OS !== 'web') {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }
+              setShowImportForm(true);
+            }}
+          >
+            <View style={[styles.optionIconWrap, styles.optionIconWrapSecondary]}>
+              <FolderDown size={40} color={Colors.accentSecondary} />
+            </View>
+            <Text style={styles.optionTitle}>Import Existing</Text>
+            <Text style={styles.optionSubtitle}>Clone from URL into local storage</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={[styles.optionCard, styles.optionCardSecondary]}>
+            <View style={styles.importField}>
+              <Text style={styles.importLabel}>Repository URL</Text>
+              <View style={styles.importInputWrap}>
+                <TextInput
+                  value={importUrl}
+                  onChangeText={setImportUrl}
+                  placeholder="https://github.com/owner/repo.git"
+                  placeholderTextColor={Colors.textMuted}
+                  style={styles.importInput}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+            </View>
+            <View style={styles.importField}>
+              <Text style={styles.importLabel}>Local Name</Text>
+              <View style={styles.importInputWrap}>
+                <TextInput
+                  value={importName}
+                  onChangeText={setImportName}
+                  placeholder="repo-name"
+                  placeholderTextColor={Colors.textMuted}
+                  style={styles.importInput}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[styles.importBtn, (!importUrl.trim() || !importName.trim() || cloning) && styles.importBtnDisabled]}
+              onPress={handleStartImport}
+              activeOpacity={0.8}
+            >
+              {cloning ? (
+                <>
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <Text style={styles.importBtnText}>Importing...</Text>
+                </>
+              ) : (
+                <Text style={styles.importBtnText}>Start Import</Text>
+              )}
+            </TouchableOpacity>
           </View>
-          <Text style={styles.optionTitle}>Import Existing</Text>
-          <Text style={styles.optionSubtitle}>Add a repository from device storage</Text>
-        </TouchableOpacity>
+        )}
 
         <View style={styles.recentSection}>
           <Text style={styles.recentLabel}>RECENT LOCATIONS</Text>
@@ -125,6 +197,47 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.textSecondary,
     textAlign: 'center',
+  },
+  importField: {
+    alignSelf: 'stretch',
+    marginBottom: Spacing.md,
+  },
+  importLabel: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    marginBottom: 6,
+  },
+  importInputWrap: {
+    backgroundColor: Colors.bgSecondary,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.borderDefault,
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.md,
+    height: 44,
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+  },
+  importInput: {
+    color: Colors.textPrimary,
+    fontSize: 14,
+  },
+  importBtn: {
+    marginTop: Spacing.sm,
+    backgroundColor: Colors.accentSecondary,
+    borderRadius: Radius.sm,
+    paddingVertical: 12,
+    paddingHorizontal: Spacing.lg,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  importBtnDisabled: {
+    opacity: 0.6,
+  },
+  importBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '600' as const,
   },
   recentSection: {
     marginTop: Spacing.lg,
