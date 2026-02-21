@@ -145,7 +145,7 @@ export const mockCommits: GitCommit[] = [
     sha: 'e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4',
     shortSha: 'e5f6a7b',
     message: 'feat: add syntax highlighting for 20+ languages',
-    author: 'Maya Johnson',
+    author: 'Maya son',
     email: 'maya@gitlane.dev',
     date: '3 days ago',
     parents: ['f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5'],

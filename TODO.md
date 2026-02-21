@@ -82,8 +82,8 @@ QR Code (Small Repos),Medium,Convert a small patch or commit into a series of QR
 Local Socket (Hardest),High,"Use react-native-tcp-socket to create a mini-server on one phone that the other phone ""clones"" from over the same Wi-Fi."
 
 Merge Conflict hard
-P2P transfer hardcoded
-Create Branch
+Create Branch hard
+p2p transfer online git api
 Notification easy
 Offline Agent easy-medium
 Offline Code editor medium-hard
