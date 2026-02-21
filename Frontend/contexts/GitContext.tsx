@@ -3,10 +3,11 @@ import { gitEngine } from "@/services/git/engine";
 import { listUserRepos } from "@/services/github/api";
 import { storage } from "@/services/storage/storage";
 import { profileCache } from "@/services/storage/profileCache";
+import { pushQueue } from "@/services/sync/pushQueue";
 import { AppSettings, ConflictFile, GitHubRepo } from "@/types/git";
 import createContextHook from "@nkzw/create-context-hook";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const TAG = "[GitContext]";
 
@@ -100,6 +101,43 @@ export const [GitProvider, useGit] = createContextHook(() => {
       setSelectedRepoId(repositoriesQuery.data[0].id);
     }
   }, [repositoriesQuery.data, selectedRepoId]);
+
+  // ── Push Queue: start monitoring + subscribe to events ─────────────
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+
+  useEffect(() => {
+    pushQueue.startMonitoring();
+
+    const unsub = pushQueue.subscribe((event) => {
+      switch (event.type) {
+        case 'queued':
+          showToastRef.current('info', event.message);
+          break;
+        case 'drain-start':
+          showToastRef.current('info', event.message);
+          break;
+        case 'success':
+          showToastRef.current('success', event.message);
+          queryClient.invalidateQueries({ queryKey: ['repositories'] });
+          break;
+        case 'failed':
+          showToastRef.current('error', event.message);
+          break;
+        case 'drain-end':
+          showToastRef.current(
+            event.remaining === 0 ? 'success' : 'warning',
+            event.message,
+          );
+          break;
+      }
+    });
+
+    return () => {
+      unsub();
+      pushQueue.stopMonitoring();
+    };
+  }, [queryClient]);
 
   const filesQuery = useQuery({
     queryKey: ["files", selectedRepoId],
@@ -280,6 +318,16 @@ export const [GitProvider, useGit] = createContextHook(() => {
       showToast("warning", "GitHub token not set");
       return;
     }
+
+    // Check connectivity first
+    const online = await pushQueue.isOnline();
+    if (!online) {
+      // Queue the push for later
+      const branch = selectedRepo.currentBranch ?? 'main';
+      await pushQueue.enqueue(selectedRepo.id, selectedRepo.name, branch);
+      return; // toast shown by queue subscriber
+    }
+
     try {
       await gitEngine.push(selectedRepo.id, settings.githubToken);
       showToast("success", "Pushed to origin");
