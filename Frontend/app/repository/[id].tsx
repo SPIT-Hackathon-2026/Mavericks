@@ -266,7 +266,12 @@ export default function RepositoryDetail() {
                 } else {
                   router.push({
                     pathname: '/file-viewer',
-                    params: { name: file.name, content: file.content ?? '', ext: file.extension ?? '' },
+                    params: {
+                      name: file.name,
+                      content: file.content ?? '',
+                      ext: file.extension ?? '',
+                      filePath: file.path,
+                    },
                   });
                 }
               }}
