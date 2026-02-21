@@ -1,4 +1,4 @@
-﻿import git from "isomorphic-git";
+import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import { expoFS } from "./expo-fs";
 import type {
@@ -19,7 +19,7 @@ const fs = expoFS;
 
 // All git paths are POSIX under /repos/*  (mapped to Expo documentDirectory)
 const BASE_DIR = "/repos";
-const DEMO_REPO = "GitLane-Demo";
+// Demo repo removed
 
 const TAG = "[GitEngine]";
 
@@ -175,94 +175,10 @@ export class GitEngine {
   private async bootstrap() {
     console.log(TAG, `Bootstrapping â€“ BASE_DIR = ${BASE_DIR}`);
     await ensureDirDeep(BASE_DIR);
-    await this.ensureDemoRepo();
     console.log(TAG, "Bootstrap complete âœ“");
   }
 
-  // â”€â”€ Demo Repo with Pre-Seeded Merge Conflict â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  private async ensureDemoRepo() {
-    const dir = this.resolveRepoDir(DEMO_REPO);
-    try {
-      await fs.promises.stat(joinPath(dir, ".git"));
-      console.log(TAG, `Demo repo already exists at ${dir}`);
-      return;
-    } catch (_) {
-      // needs creating
-    }
-
-    console.log(TAG, `Seeding demo repo â†’ ${dir}`);
-    await ensureDirDeep(dir);
-    await git.init({ fs, dir });
-    console.log(TAG, `.git initialised at ${dir}/.git`);
-
-    // â”€â”€ main branch: initial files â”€â”€
-    await ensureDirDeep(joinPath(dir, "src"));
-    await ensureDirDeep(joinPath(dir, "docs"));
-
-    await fs.promises.writeFile(joinPath(dir, "readme.md"), "Original Content");
-    await fs.promises.writeFile(
-      joinPath(dir, "src", "index.ts"),
-      "export const hello = () => 'GitLane';\n"
-    );
-    await fs.promises.writeFile(
-      joinPath(dir, "docs", "guide.md"),
-      "## Getting Started\n\nThis is a demo repository managed by isomorphic-git."
-    );
-
-    await git.add({ fs, dir, filepath: "readme.md" });
-    await git.add({ fs, dir, filepath: "src/index.ts" });
-    await git.add({ fs, dir, filepath: "docs/guide.md" });
-    await git.commit({
-      fs,
-      dir,
-      message: "chore: seed demo repository with original content",
-      author: { name: "GitLane", email: "demo@gitlane.app" },
-      committer: { name: "GitLane", email: "demo@gitlane.app" },
-    });
-    console.log(TAG, 'main â† initial commit (readme.md = "Original Content")');
-
-    // â”€â”€ second commit on main â”€â”€
-    await fs.promises.writeFile(
-      joinPath(dir, "src", "status.ts"),
-      'export const status = "ok";\n'
-    );
-    await git.add({ fs, dir, filepath: "src/status.ts" });
-    await git.commit({
-      fs,
-      dir,
-      message: "feat: add status module",
-      author: { name: "GitLane", email: "demo@gitlane.app" },
-      committer: { name: "GitLane", email: "demo@gitlane.app" },
-    });
-    console.log(TAG, "main â† feat: add status module");
-
-    // â”€â”€ create feature-conflict branch â”€â”€
-    await git.branch({ fs, dir, ref: "feature-conflict" });
-    await git.checkout({ fs, dir, ref: "feature-conflict" });
-    console.log(TAG, "Checked out feature-conflict");
-
-    // Overwrite readme.md with conflicting content
-    await fs.promises.writeFile(joinPath(dir, "readme.md"), "Feature Content");
-    await git.add({ fs, dir, filepath: "readme.md" });
-    await git.commit({
-      fs,
-      dir,
-      message: "feat: update readme with feature content",
-      author: { name: "Feature Dev", email: "feat@gitlane.app" },
-      committer: { name: "Feature Dev", email: "feat@gitlane.app" },
-    });
-    console.log(TAG, 'feature-conflict â† readme.md = "Feature Content"');
-
-    // â”€â”€ switch back to main â”€â”€
-    await git.checkout({ fs, dir, ref: "main" });
-
-    // Log final .git state
-    const branches = await git.listBranches({ fs, dir });
-    const files = await git.listFiles({ fs, dir });
-    console.log(TAG, `.git branches: [${branches.join(", ")}]`);
-    console.log(TAG, `.git tracked files: [${files.join(", ")}]`);
-    console.log(TAG, "Demo repo seeded with pre-set merge conflict âœ“");
-  }
+  // Demo seeding removed
 
   resolveRepoDir(name: string) {
     return joinPath(BASE_DIR, name);
@@ -272,7 +188,8 @@ export class GitEngine {
   async cloneRepo(
     url: string,
     name: string,
-    onProgress?: (phase: string, loaded: number, total: number) => void
+    onProgress?: (phase: string, loaded: number, total: number) => void,
+    token?: string
   ): Promise<Repository> {
     await this.init();
     const safeName = name.trim().replace(/\s+/g, "-");
@@ -299,6 +216,7 @@ export class GitEngine {
         url,
         singleBranch: true,
         depth: 50,
+        onAuth: token ? () => ({ username: token, password: "" }) : undefined,
         onProgress: onProgress
           ? (evt) => onProgress(evt.phase, evt.loaded, evt.total ?? 0)
           : undefined,
@@ -310,6 +228,38 @@ export class GitEngine {
     } catch (err) {
       await failTx(dir, txId);
       console.error(TAG, `clone FAILED â†’ ${safeName}`, err);
+      throw err;
+    }
+  }
+
+  async push(repoId: string, token: string): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const ref =
+      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+    const txId = randomId();
+    await appendTx(dir, {
+      id: txId,
+      type: "pull",
+      status: "PENDING",
+      message: `push ${ref}`,
+      startedAt: Date.now(),
+    });
+    try {
+      await git.push({
+        fs,
+        http,
+        dir,
+        remote: "origin",
+        ref,
+        onAuth: () => ({ username: token, password: "" }),
+      });
+      await completeTx(dir, txId);
+      await deleteGitCache(dir);
+      console.log(TAG, `push COMPLETE â†’ ${repoId} (${ref})`);
+    } catch (err) {
+      await failTx(dir, txId);
+      console.error(TAG, `push FAILED â†’ ${repoId}`, err);
       throw err;
     }
   }
