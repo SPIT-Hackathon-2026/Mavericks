@@ -181,7 +181,7 @@ export default function TransferScreen() {
               <View style={[styles.qrCorner, styles.qrBottomRight]} />
               <View style={styles.scannerContent}>
                 <QrCode size={48} color={Colors.accentPrimary} strokeWidth={1} />
-                <Text style={styles.scannerText}>Point camera at sender's QR code</Text>
+                <Text style={styles.scannerText}>Point camera at sender&#39;s QR code</Text>
               </View>
             </View>
             <View style={styles.scanActions}>

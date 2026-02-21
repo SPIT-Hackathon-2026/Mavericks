@@ -98,6 +98,8 @@ export interface AppSettings {
   autoAcceptKnown: boolean;
   discoveryVisible: boolean;
   enableReflog: boolean;
+  githubToken?: string | null;
+  githubClientId?: string | null;
 }
 
 export interface TransferState {
@@ -128,3 +130,12 @@ export type GraphEdge = {
   color: string;
   path: string;
 };
+
+export interface GitHubRepo {
+  id: number;
+  name: string;
+  full_name: string;
+  clone_url: string;
+  private: boolean;
+  updated_at: string;
+}

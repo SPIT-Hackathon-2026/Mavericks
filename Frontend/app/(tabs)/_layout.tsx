@@ -1,14 +1,29 @@
-import { Tabs } from "expo-router";
-import { GitBranch, GitGraph, QrCode, Settings, UserCircle } from "lucide-react-native";
-import React from "react";
-import { Platform, View, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
+import { Tabs } from "expo-router";
+import {
+    GitBranch,
+    GitGraph,
+    QrCode,
+    Settings,
+    UserCircle
+} from "lucide-react-native";
+import React from "react";
+import { Platform, StyleSheet, View } from "react-native";
 
-function TabIcon({ Icon, focused }: { Icon: typeof GitBranch; focused: boolean }) {
+function TabIcon({
+  Icon,
+  focused,
+}: {
+  Icon: typeof GitBranch;
+  focused: boolean;
+}) {
   return (
     <View style={styles.iconContainer}>
       {focused && <View style={styles.activeIndicator} />}
-      <Icon size={24} color={focused ? Colors.accentPrimary : Colors.textMuted} />
+      <Icon
+        size={24}
+        color={focused ? Colors.accentPrimary : Colors.textMuted}
+      />
     </View>
   );
 }
@@ -24,11 +39,11 @@ export default function TabLayout() {
           backgroundColor: Colors.bgSecondary,
           borderTopColor: Colors.borderDefault,
           borderTopWidth: StyleSheet.hairlineWidth,
-          ...(Platform.OS === 'web' ? { height: 65 } : {}),
+          ...(Platform.OS === "web" ? { height: 65 } : {}),
         },
         tabBarLabelStyle: {
           fontSize: 11,
-          fontWeight: '600' as const,
+          fontWeight: "600" as const,
         },
       }}
     >
@@ -36,50 +51,61 @@ export default function TabLayout() {
         name="(repos)"
         options={{
           title: "Repos",
-          tabBarIcon: ({ focused }) => <TabIcon Icon={GitBranch} focused={focused} />,
+          tabBarIcon: ({ focused }) => (
+            <TabIcon Icon={GitBranch} focused={focused} />
+          ),
         }}
       />
       <Tabs.Screen
         name="graph"
         options={{
           title: "Graph",
-          tabBarIcon: ({ focused }) => <TabIcon Icon={GitGraph} focused={focused} />,
+          tabBarIcon: ({ focused }) => (
+            <TabIcon Icon={GitGraph} focused={focused} />
+          ),
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
           title: "Profile",
-          tabBarIcon: ({ focused }) => <TabIcon Icon={UserCircle} focused={focused} />,
+          tabBarIcon: ({ focused }) => (
+            <TabIcon Icon={UserCircle} focused={focused} />
+          ),
         }}
       />
       <Tabs.Screen
         name="transfer"
         options={{
           title: "Transfer",
-          tabBarIcon: ({ focused }) => <TabIcon Icon={QrCode} focused={focused} />,
+          tabBarIcon: ({ focused }) => (
+            <TabIcon Icon={QrCode} focused={focused} />
+          ),
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: "Settings",
-          tabBarIcon: ({ focused }) => <TabIcon Icon={Settings} focused={focused} />,
+          tabBarIcon: ({ focused }) => (
+            <TabIcon Icon={Settings} focused={focused} />
+          ),
         }}
       />
+      {/* Terminal removed from footer; opens within repository view */}
     </Tabs>
   );
 }
 
 const styles = StyleSheet.create({
   iconContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
     paddingTop: 4,
   },
   activeIndicator: {
-    position: 'absolute',
+    position: "absolute",
     top: -2,
     width: 20,
     height: 2,
