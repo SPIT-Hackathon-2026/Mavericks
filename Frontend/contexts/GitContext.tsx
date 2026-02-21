@@ -97,6 +97,7 @@ export const [GitProvider, useGit] = createContextHook(() => {
     onSuccess: (repo) => {
       queryClient.invalidateQueries({ queryKey: ['repositories'] });
       showToast('success', `Repository "${repo.name}" created`);
+      setSelectedRepoId(repo.id);
     },
     onError: (error) => {
       const message = error instanceof Error ? error.message : 'Failed to create repository';
@@ -167,6 +168,7 @@ export const [GitProvider, useGit] = createContextHook(() => {
       queryClient.invalidateQueries({ queryKey: ['repositories'] });
       showToast('success', `Cloned "${repo.name}"`);
       setIsCloning(false);
+      setSelectedRepoId(repo.id);
       return repo;
     } catch (err) {
       setIsCloning(false);

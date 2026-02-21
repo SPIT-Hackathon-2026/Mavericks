@@ -1,7 +1,14 @@
-﻿import git from 'isomorphic-git';
-import http from 'isomorphic-git/http/web';
-import { expoFS } from './expo-fs';
-import type { Repository, GitFile, GitCommit, GitBranch, FileStatus, ChangeType } from '@/types/git';
+﻿import git from "isomorphic-git";
+import http from "isomorphic-git/http/web";
+import { expoFS } from "./expo-fs";
+import type {
+  Repository,
+  GitFile,
+  GitCommit,
+  GitBranch,
+  FileStatus,
+  ChangeType,
+} from "@/types/git";
 
 // ---------------------------------------------------------------------------
 // File-system & constants
@@ -11,10 +18,10 @@ import type { Repository, GitFile, GitCommit, GitBranch, FileStatus, ChangeType 
 const fs = expoFS;
 
 // All git paths are POSIX under /repos/*  (mapped to Expo documentDirectory)
-const BASE_DIR = '/repos';
-const DEMO_REPO = 'GitLane-Demo';
+const BASE_DIR = "/repos";
+const DEMO_REPO = "GitLane-Demo";
 
-const TAG = '[GitEngine]';
+const TAG = "[GitEngine]";
 
 // ---------------------------------------------------------------------------
 // Transaction helpers  (written into .git via ExpoFS)
@@ -22,24 +29,24 @@ const TAG = '[GitEngine]';
 
 export interface TransactionEntry {
   id: string;
-  type: 'commit' | 'merge' | 'branch' | 'clone' | 'pull';
-  status: 'PENDING' | 'COMPLETED' | 'FAILED';
+  type: "commit" | "merge" | "branch" | "clone" | "pull";
+  status: "PENDING" | "COMPLETED" | "FAILED";
   message?: string;
   startedAt: number;
   completedAt?: number;
 }
 
 function txFilePath(dir: string) {
-  return joinPath(dir, '.git', 'gitlane_transactions.json');
+  return joinPath(dir, ".git", "gitlane_transactions.json");
 }
 
 function cacheFilePath(dir: string) {
-  return joinPath(dir, '.git', 'gitlane_cache.json');
+  return joinPath(dir, ".git", "gitlane_cache.json");
 }
 
 async function readTransactions(dir: string): Promise<TransactionEntry[]> {
   try {
-    const raw = await fs.promises.readFile(txFilePath(dir), 'utf8');
+    const raw = await fs.promises.readFile(txFilePath(dir), "utf8");
     return JSON.parse(raw as string) as TransactionEntry[];
   } catch {
     return [];
@@ -47,7 +54,11 @@ async function readTransactions(dir: string): Promise<TransactionEntry[]> {
 }
 
 async function writeTransactions(dir: string, entries: TransactionEntry[]) {
-  await fs.promises.writeFile(txFilePath(dir), JSON.stringify(entries, null, 2), 'utf8');
+  await fs.promises.writeFile(
+    txFilePath(dir),
+    JSON.stringify(entries, null, 2),
+    "utf8"
+  );
   console.log(TAG, `TX log updated â†’ ${entries.length} entries`);
 }
 
@@ -59,9 +70,9 @@ async function appendTx(dir: string, entry: TransactionEntry) {
 
 async function completeTx(dir: string, txId: string) {
   const list = await readTransactions(dir);
-  const idx = list.findIndex(e => e.id === txId);
+  const idx = list.findIndex((e) => e.id === txId);
   if (idx !== -1) {
-    list[idx].status = 'COMPLETED';
+    list[idx].status = "COMPLETED";
     list[idx].completedAt = Date.now();
   }
   await writeTransactions(dir, list);
@@ -69,9 +80,9 @@ async function completeTx(dir: string, txId: string) {
 
 async function failTx(dir: string, txId: string) {
   const list = await readTransactions(dir);
-  const idx = list.findIndex(e => e.id === txId);
+  const idx = list.findIndex((e) => e.id === txId);
   if (idx !== -1) {
-    list[idx].status = 'FAILED';
+    list[idx].status = "FAILED";
     list[idx].completedAt = Date.now();
   }
   await writeTransactions(dir, list);
@@ -95,14 +106,14 @@ function randomId() {
 }
 
 function joinPath(...parts: string[]): string {
-  return parts.join('/').replace(/\\/g, '/');
+  return parts.join("/").replace(/\\/g, "/");
 }
 
 function formatTimestamp(timestamp?: number): string {
-  if (!timestamp) return 'just now';
+  if (!timestamp) return "just now";
   const diffMs = Date.now() - timestamp * 1000;
   const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'just now';
+  if (diffMin < 1) return "just now";
   if (diffMin < 60) return `${diffMin} min ago`;
   const diffHours = Math.floor(diffMin / 60);
   if (diffHours < 24) return `${diffHours}h ago`;
@@ -110,19 +121,27 @@ function formatTimestamp(timestamp?: number): string {
   return `${diffDays}d ago`;
 }
 
-function ensureStatus(head: number, workdir: number, stage: number): FileStatus {
-  if (head === 0 && workdir === 2 && stage === 0) return 'untracked';
-  if (workdir === 2 && stage === 2) return 'staged';
-  if (workdir === 2 && stage !== 2) return 'modified';
-  if (head === 1 && workdir === 0 && stage === 0) return 'untracked';
-  return 'modified';
+function ensureStatus(
+  head: number,
+  workdir: number,
+  stage: number
+): FileStatus {
+  if (head === 0 && workdir === 2 && stage === 0) return "untracked";
+  if (workdir === 2 && stage === 2) return "staged";
+  if (workdir === 2 && stage !== 2) return "modified";
+  if (head === 1 && workdir === 0 && stage === 0) return "untracked";
+  return "modified";
 }
 
-function changeTypeFromStatus(head: number, workdir: number, stage: number): ChangeType | undefined {
-  if (head === 0 && workdir === 2) return 'A';
-  if (head === 1 && workdir === 0 && stage === 0) return 'D';
-  if (stage === 3) return 'U';
-  if (workdir === 2) return 'M';
+function changeTypeFromStatus(
+  head: number,
+  workdir: number,
+  stage: number
+): ChangeType | undefined {
+  if (head === 0 && workdir === 2) return "A";
+  if (head === 1 && workdir === 0 && stage === 0) return "D";
+  if (stage === 3) return "U";
+  if (workdir === 2) return "M";
   return undefined;
 }
 
@@ -139,7 +158,7 @@ async function removeDir(dir: string) {
     // ExpoFS rmdir deletes recursively
     await fs.promises.rmdir(dir);
   } catch (err) {
-    console.warn(TAG, 'removeDir failed', err);
+    console.warn(TAG, "removeDir failed", err);
   }
 }
 
@@ -157,14 +176,14 @@ export class GitEngine {
     console.log(TAG, `Bootstrapping â€“ BASE_DIR = ${BASE_DIR}`);
     await ensureDirDeep(BASE_DIR);
     await this.ensureDemoRepo();
-    console.log(TAG, 'Bootstrap complete âœ“');
+    console.log(TAG, "Bootstrap complete âœ“");
   }
 
   // â”€â”€ Demo Repo with Pre-Seeded Merge Conflict â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   private async ensureDemoRepo() {
     const dir = this.resolveRepoDir(DEMO_REPO);
     try {
-      await fs.promises.stat(joinPath(dir, '.git'));
+      await fs.promises.stat(joinPath(dir, ".git"));
       console.log(TAG, `Demo repo already exists at ${dir}`);
       return;
     } catch (_) {
@@ -177,60 +196,72 @@ export class GitEngine {
     console.log(TAG, `.git initialised at ${dir}/.git`);
 
     // â”€â”€ main branch: initial files â”€â”€
-    await ensureDirDeep(joinPath(dir, 'src'));
-    await ensureDirDeep(joinPath(dir, 'docs'));
+    await ensureDirDeep(joinPath(dir, "src"));
+    await ensureDirDeep(joinPath(dir, "docs"));
 
-    await fs.promises.writeFile(joinPath(dir, 'readme.md'), 'Original Content');
-    await fs.promises.writeFile(joinPath(dir, 'src', 'index.ts'), "export const hello = () => 'GitLane';\n");
-    await fs.promises.writeFile(joinPath(dir, 'docs', 'guide.md'), '## Getting Started\n\nThis is a demo repository managed by isomorphic-git.');
+    await fs.promises.writeFile(joinPath(dir, "readme.md"), "Original Content");
+    await fs.promises.writeFile(
+      joinPath(dir, "src", "index.ts"),
+      "export const hello = () => 'GitLane';\n"
+    );
+    await fs.promises.writeFile(
+      joinPath(dir, "docs", "guide.md"),
+      "## Getting Started\n\nThis is a demo repository managed by isomorphic-git."
+    );
 
-    await git.add({ fs, dir, filepath: 'readme.md' });
-    await git.add({ fs, dir, filepath: 'src/index.ts' });
-    await git.add({ fs, dir, filepath: 'docs/guide.md' });
+    await git.add({ fs, dir, filepath: "readme.md" });
+    await git.add({ fs, dir, filepath: "src/index.ts" });
+    await git.add({ fs, dir, filepath: "docs/guide.md" });
     await git.commit({
-      fs, dir,
-      message: 'chore: seed demo repository with original content',
-      author:    { name: 'GitLane', email: 'demo@gitlane.app' },
-      committer: { name: 'GitLane', email: 'demo@gitlane.app' },
+      fs,
+      dir,
+      message: "chore: seed demo repository with original content",
+      author: { name: "GitLane", email: "demo@gitlane.app" },
+      committer: { name: "GitLane", email: "demo@gitlane.app" },
     });
     console.log(TAG, 'main â† initial commit (readme.md = "Original Content")');
 
     // â”€â”€ second commit on main â”€â”€
-    await fs.promises.writeFile(joinPath(dir, 'src', 'status.ts'), 'export const status = "ok";\n');
-    await git.add({ fs, dir, filepath: 'src/status.ts' });
+    await fs.promises.writeFile(
+      joinPath(dir, "src", "status.ts"),
+      'export const status = "ok";\n'
+    );
+    await git.add({ fs, dir, filepath: "src/status.ts" });
     await git.commit({
-      fs, dir,
-      message: 'feat: add status module',
-      author:    { name: 'GitLane', email: 'demo@gitlane.app' },
-      committer: { name: 'GitLane', email: 'demo@gitlane.app' },
+      fs,
+      dir,
+      message: "feat: add status module",
+      author: { name: "GitLane", email: "demo@gitlane.app" },
+      committer: { name: "GitLane", email: "demo@gitlane.app" },
     });
-    console.log(TAG, 'main â† feat: add status module');
+    console.log(TAG, "main â† feat: add status module");
 
     // â”€â”€ create feature-conflict branch â”€â”€
-    await git.branch({ fs, dir, ref: 'feature-conflict' });
-    await git.checkout({ fs, dir, ref: 'feature-conflict' });
-    console.log(TAG, 'Checked out feature-conflict');
+    await git.branch({ fs, dir, ref: "feature-conflict" });
+    await git.checkout({ fs, dir, ref: "feature-conflict" });
+    console.log(TAG, "Checked out feature-conflict");
 
     // Overwrite readme.md with conflicting content
-    await fs.promises.writeFile(joinPath(dir, 'readme.md'), 'Feature Content');
-    await git.add({ fs, dir, filepath: 'readme.md' });
+    await fs.promises.writeFile(joinPath(dir, "readme.md"), "Feature Content");
+    await git.add({ fs, dir, filepath: "readme.md" });
     await git.commit({
-      fs, dir,
-      message: 'feat: update readme with feature content',
-      author:    { name: 'Feature Dev', email: 'feat@gitlane.app' },
-      committer: { name: 'Feature Dev', email: 'feat@gitlane.app' },
+      fs,
+      dir,
+      message: "feat: update readme with feature content",
+      author: { name: "Feature Dev", email: "feat@gitlane.app" },
+      committer: { name: "Feature Dev", email: "feat@gitlane.app" },
     });
     console.log(TAG, 'feature-conflict â† readme.md = "Feature Content"');
 
     // â”€â”€ switch back to main â”€â”€
-    await git.checkout({ fs, dir, ref: 'main' });
+    await git.checkout({ fs, dir, ref: "main" });
 
     // Log final .git state
     const branches = await git.listBranches({ fs, dir });
     const files = await git.listFiles({ fs, dir });
-    console.log(TAG, `.git branches: [${branches.join(', ')}]`);
-    console.log(TAG, `.git tracked files: [${files.join(', ')}]`);
-    console.log(TAG, 'Demo repo seeded with pre-set merge conflict âœ“');
+    console.log(TAG, `.git branches: [${branches.join(", ")}]`);
+    console.log(TAG, `.git tracked files: [${files.join(", ")}]`);
+    console.log(TAG, "Demo repo seeded with pre-set merge conflict âœ“");
   }
 
   resolveRepoDir(name: string) {
@@ -241,10 +272,10 @@ export class GitEngine {
   async cloneRepo(
     url: string,
     name: string,
-    onProgress?: (phase: string, loaded: number, total: number) => void,
+    onProgress?: (phase: string, loaded: number, total: number) => void
   ): Promise<Repository> {
     await this.init();
-    const safeName = name.trim().replace(/\s+/g, '-');
+    const safeName = name.trim().replace(/\s+/g, "-");
     const dir = this.resolveRepoDir(safeName);
     const txId = randomId();
     console.log(TAG, `clone START â†’ ${url} into ${dir}`);
@@ -253,13 +284,19 @@ export class GitEngine {
     await git.init({ fs, dir }); // need .git before we can write tx log
 
     await appendTx(dir, {
-      id: txId, type: 'clone', status: 'PENDING',
-      message: url, startedAt: Date.now(),
+      id: txId,
+      type: "clone",
+      status: "PENDING",
+      message: url,
+      startedAt: Date.now(),
     });
 
     try {
       await git.clone({
-        fs, http, dir, url,
+        fs,
+        http,
+        dir,
+        url,
         singleBranch: true,
         depth: 50,
         onProgress: onProgress
@@ -280,48 +317,84 @@ export class GitEngine {
   // â”€â”€ List â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async listRepositories(): Promise<Repository[]> {
     await this.init();
-    const entries = await fs.promises.readdir(BASE_DIR);
+    let entries: string[] = [];
+    try {
+      entries = await fs.promises.readdir(BASE_DIR);
+    } catch (err) {
+      console.warn(TAG, "listRepositories: readdir failed", err);
+      return [];
+    }
     const repos: Repository[] = [];
-    console.log(TAG, `listRepositories â€“ scanning ${BASE_DIR}, found: [${entries.join(', ')}]`);
+    console.log(
+      TAG,
+      `listRepositories â€“ scanning ${BASE_DIR}, found: [${entries.join(
+        ", "
+      )}]`
+    );
 
     for (const name of entries) {
       const dir = this.resolveRepoDir(name);
-      const hasGit = await fs.promises.stat(joinPath(dir, '.git')).catch(() => null);
+      const hasGit = await fs.promises
+        .stat(joinPath(dir, ".git"))
+        .catch(() => null);
       if (!hasGit) continue;
-      const repo = await this.buildRepository(name, dir);
-      repos.push(repo);
+      try {
+        const repo = await this.buildRepository(name, dir);
+        repos.push(repo);
+      } catch (err) {
+        console.warn(
+          TAG,
+          `listRepositories: buildRepository("${name}") failed`,
+          err
+        );
+      }
     }
 
     // newest first by last activity
     return repos.sort((a, b) => (a.lastActivity > b.lastActivity ? -1 : 1));
   }
 
-  private async buildRepository(name: string, dir: string): Promise<Repository> {
-    const currentBranch = (await git.currentBranch({ fs, dir, fullname: false })) ?? 'main';
+  private async buildRepository(
+    name: string,
+    dir: string
+  ): Promise<Repository> {
+    const currentBranch =
+      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
     const branches = await git.listBranches({ fs, dir });
-    const branchMeta: GitBranch[] = await Promise.all(branches.map(async (branch) => {
-      const head = (await git.log({ fs, dir, ref: branch, depth: 1 }))[0];
-      return {
-        name: branch,
-        isRemote: false,
-        isCurrent: branch === currentBranch,
-        lastCommitSha: head?.oid ?? '',
-        lastCommitMessage: head?.commit.message ?? '',
-        ahead: 0,
-        behind: 0,
-      };
-    }));
+    const branchMeta: GitBranch[] = await Promise.all(
+      branches.map(async (branch) => {
+        const head = (await git.log({ fs, dir, ref: branch, depth: 1 }))[0];
+        return {
+          name: branch,
+          isRemote: false,
+          isCurrent: branch === currentBranch,
+          lastCommitSha: head?.oid ?? "",
+          lastCommitMessage: head?.commit.message ?? "",
+          ahead: 0,
+          behind: 0,
+        };
+      })
+    );
 
     const statusMatrix = await git.statusMatrix({ fs, dir });
-    const stagedCount = statusMatrix.filter(([, , , stage]) => stage === 2 || stage === 3).length;
-    const modifiedCount = statusMatrix.filter(([, , workdir, stage]) => workdir === 2 && stage !== 2).length;
-    const conflictCount = statusMatrix.filter(([, , , stage]) => stage === 3).length;
+    const stagedCount = statusMatrix.filter(
+      ([, , , stage]) => stage === 2 || stage === 3
+    ).length;
+    const modifiedCount = statusMatrix.filter(
+      ([, , workdir, stage]) => workdir === 2 && stage !== 2
+    ).length;
+    const conflictCount = statusMatrix.filter(
+      ([, , , stage]) => stage === 3
+    ).length;
 
     const latestCommit = (await git.log({ fs, dir, depth: 1 }))[0];
     const lastActivity = formatTimestamp(latestCommit?.commit.author.timestamp);
     const commitCount = (await git.log({ fs, dir, depth: 50 })).length;
 
-    console.log(TAG, `buildRepo(${name}) â€“ branch=${currentBranch} commits=${commitCount} staged=${stagedCount} modified=${modifiedCount}`);
+    console.log(
+      TAG,
+      `buildRepo(${name}) â€“ branch=${currentBranch} commits=${commitCount} staged=${stagedCount} modified=${modifiedCount}`
+    );
 
     return {
       id: name,
@@ -333,7 +406,7 @@ export class GitEngine {
       modifiedCount,
       conflictCount,
       lastActivity,
-      size: 'â€”',
+      size: "â€”",
       commitCount,
     };
   }
@@ -344,7 +417,9 @@ export class GitEngine {
     console.log(TAG, `getWorkingTree(${repoId})`);
     const statusMatrix = await git.statusMatrix({ fs, dir });
     const tracked = await git.listFiles({ fs, dir });
-    const all = Array.from(new Set([...tracked, ...statusMatrix.map(([filepath]) => filepath)]));
+    const all = Array.from(
+      new Set([...tracked, ...statusMatrix.map(([filepath]) => filepath)])
+    );
 
     const tree: GitFile[] = [];
 
@@ -358,16 +433,18 @@ export class GitEngine {
 
       const fullPath = joinPath(dir, filepath);
       const stat = await fs.promises.stat(fullPath).catch(() => null);
-      const isDirectory = stat?.type === 'dir';
+      const isDirectory = stat?.type === "dir";
       const size = stat?.size ?? 0;
-      const segments = filepath.split('/');
+      const segments = filepath.split("/");
       const fileName = segments[segments.length - 1];
-      const extension = fileName.includes('.') ? fileName.split('.').pop() : undefined;
+      const extension = fileName.includes(".")
+        ? fileName.split(".").pop()
+        : undefined;
 
       let content: string | undefined;
       if (!isDirectory) {
         try {
-          const buf = await fs.promises.readFile(fullPath, 'utf8');
+          const buf = await fs.promises.readFile(fullPath, "utf8");
           content = buf as string;
         } catch (_) {
           content = undefined;
@@ -377,7 +454,7 @@ export class GitEngine {
       const fileNode: GitFile = {
         id: filepath,
         name: fileName,
-        path: '/' + filepath,
+        path: "/" + filepath,
         isDirectory: isDirectory ?? false,
         size,
         extension,
@@ -397,7 +474,7 @@ export class GitEngine {
     if (segments.length === 0) return;
     const [head, ...rest] = segments;
     if (rest.length === 0) {
-      const existingIndex = tree.findIndex(f => f.name === head);
+      const existingIndex = tree.findIndex((f) => f.name === head);
       if (existingIndex !== -1) {
         tree[existingIndex] = { ...tree[existingIndex], ...file };
       } else {
@@ -406,12 +483,12 @@ export class GitEngine {
       return;
     }
 
-    let dirNode = tree.find(f => f.name === head && f.isDirectory);
+    let dirNode = tree.find((f) => f.name === head && f.isDirectory);
     if (!dirNode) {
       dirNode = {
         id: randomId(),
         name: head,
-        path: '/' + segments.slice(0, segments.length - rest.length).join('/'),
+        path: "/" + segments.slice(0, segments.length - rest.length).join("/"),
         isDirectory: true,
         children: [],
       };
@@ -442,23 +519,26 @@ export class GitEngine {
     }));
   }
 
-  async createRepository(name: string, addReadme: boolean): Promise<Repository> {
+  async createRepository(
+    name: string,
+    addReadme: boolean
+  ): Promise<Repository> {
     await this.init();
-    const safeName = name.trim().replace(/\s+/g, '-');
+    const safeName = name.trim().replace(/\s+/g, "-");
     const dir = this.resolveRepoDir(safeName);
     console.log(TAG, `createRepository(${safeName}) â†’ ${dir}`);
     await ensureDirDeep(dir);
     await git.init({ fs, dir });
 
     if (addReadme) {
-      await fs.promises.writeFile(joinPath(dir, 'README.md'), `# ${name}\n`);
-      await git.add({ fs, dir, filepath: 'README.md' });
+      await fs.promises.writeFile(joinPath(dir, "README.md"), `# ${name}\n`);
+      await git.add({ fs, dir, filepath: "README.md" });
       await git.commit({
         fs,
         dir,
-        message: 'chore: initial commit',
-        author: { name: 'GitLane User', email: 'user@gitlane.app' },
-        committer: { name: 'GitLane User', email: 'user@gitlane.app' },
+        message: "chore: initial commit",
+        author: { name: "GitLane User", email: "user@gitlane.app" },
+        committer: { name: "GitLane User", email: "user@gitlane.app" },
       });
     }
 
@@ -487,14 +567,21 @@ export class GitEngine {
 
   // â”€â”€ Commit (TX-wrapped + 3 s test delay) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async commit(repoId: string, message: string, author: { name: string; email: string }) {
+  async commit(
+    repoId: string,
+    message: string,
+    author: { name: string; email: string }
+  ) {
     const dir = this.resolveRepoDir(repoId);
     const txId = randomId();
 
     // 1. PENDING
     await appendTx(dir, {
-      id: txId, type: 'commit', status: 'PENDING',
-      message, startedAt: Date.now(),
+      id: txId,
+      type: "commit",
+      status: "PENDING",
+      message,
+      startedAt: Date.now(),
     });
     console.log(TAG, `commit PENDING (txId=${txId}) in ${repoId}`);
 
@@ -502,8 +589,11 @@ export class GitEngine {
       await git.commit({ fs, dir, message, author, committer: author });
 
       // â±  3-second intentional delay â€” kill app in this window to test recovery
-      console.log(TAG, `commit succeeded â€“ 3 s delay before COMPLETED (test crash-recovery)â€¦`);
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      console.log(
+        TAG,
+        `commit succeeded â€“ 3 s delay before COMPLETED (test crash-recovery)â€¦`
+      );
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
       // 2. COMPLETED + invalidate cache
       await completeTx(dir, txId);
@@ -530,8 +620,11 @@ export class GitEngine {
     const txId = randomId();
 
     await appendTx(dir, {
-      id: txId, type: 'branch', status: 'PENDING',
-      message: `create ${branch}`, startedAt: Date.now(),
+      id: txId,
+      type: "branch",
+      status: "PENDING",
+      message: `create ${branch}`,
+      startedAt: Date.now(),
     });
     console.log(TAG, `createBranch PENDING (txId=${txId}) â†’ ${branch}`);
 
@@ -549,18 +642,27 @@ export class GitEngine {
 
   // â”€â”€ Merge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async merge(repoId: string, theirBranch: string, author: { name: string; email: string }) {
+  async merge(
+    repoId: string,
+    theirBranch: string,
+    author: { name: string; email: string }
+  ) {
     const dir = this.resolveRepoDir(repoId);
     const txId = randomId();
 
     await appendTx(dir, {
-      id: txId, type: 'merge', status: 'PENDING',
-      message: `merge ${theirBranch}`, startedAt: Date.now(),
+      id: txId,
+      type: "merge",
+      status: "PENDING",
+      message: `merge ${theirBranch}`,
+      startedAt: Date.now(),
     });
     console.log(TAG, `merge PENDING (txId=${txId}) â€“ merging ${theirBranch}`);
 
     try {
-      await git.merge({ fs, dir, ours: undefined as any, theirs: theirBranch, author });
+      const current =
+        (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+      await git.merge({ fs, dir, ours: current, theirs: theirBranch, author });
       await completeTx(dir, txId);
       await deleteGitCache(dir);
       console.log(TAG, `merge COMPLETED (txId=${txId})`);
@@ -573,20 +675,32 @@ export class GitEngine {
 
   // â”€â”€ Recovery: find PENDING transactions across all repos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-  async getPendingTransactions(): Promise<{ repoId: string; dir: string; entries: TransactionEntry[] }[]> {
+  async getPendingTransactions(): Promise<
+    { repoId: string; dir: string; entries: TransactionEntry[] }[]
+  > {
     await this.init();
-    const results: { repoId: string; dir: string; entries: TransactionEntry[] }[] = [];
+    const results: {
+      repoId: string;
+      dir: string;
+      entries: TransactionEntry[];
+    }[] = [];
     const entries = await fs.promises.readdir(BASE_DIR);
 
     for (const name of entries) {
       const dir = this.resolveRepoDir(name);
-      const hasGit = await fs.promises.stat(joinPath(dir, '.git')).catch(() => null);
+      const hasGit = await fs.promises
+        .stat(joinPath(dir, ".git"))
+        .catch(() => null);
       if (!hasGit) continue;
 
       const txList = await readTransactions(dir);
-      const pending = txList.filter(e => e.status === 'PENDING');
+      const pending = txList.filter((e) => e.status === "PENDING");
       if (pending.length > 0) {
-        console.warn(TAG, `âš  PENDING transactions in ${name}:`, pending.map(p => `${p.type}(${p.id})`).join(', '));
+        console.warn(
+          TAG,
+          `âš  PENDING transactions in ${name}:`,
+          pending.map((p) => `${p.type}(${p.id})`).join(", ")
+        );
         results.push({ repoId: name, dir, entries: pending });
       }
     }

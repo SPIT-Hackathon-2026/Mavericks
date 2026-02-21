@@ -10,6 +10,7 @@ import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
 import { Spacing, Radius, Shadows } from '@/constants/theme';
 import { useGit } from '@/contexts/GitContext';
+import { getDocRoot } from '@/services/git/expo-fs';
 
 export default function CreateRepoModal() {
   const router = useRouter();
@@ -84,7 +85,16 @@ export default function CreateRepoModal() {
                 autoCapitalize="none"
               />
             </View>
-            <TouchableOpacity style={styles.browseBtn}>
+            <TouchableOpacity
+              style={styles.browseBtn}
+              onPress={() => {
+                const base = getDocRoot() + '/repos/';
+                setLocation(base);
+                if (Platform.OS !== 'web') {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }
+              }}
+            >
               <Text style={styles.browseBtnText}>Browse</Text>
             </TouchableOpacity>
           </View>
