@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { GitBranch, GitGraph, QrCode, Settings, UserCircle } from "lucide-react-native";
+import { GitBranch, GitGraph, QrCode, Settings, UserCircle, Terminal as TerminalIcon } from "lucide-react-native";
 import React from "react";
 import { Platform, View, StyleSheet } from "react-native";
 import Colors from "@/constants/colors";
@@ -65,6 +65,13 @@ export default function TabLayout() {
         options={{
           title: "Settings",
           tabBarIcon: ({ focused }) => <TabIcon Icon={Settings} focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
+        name="terminal"
+        options={{
+          title: "Terminal",
+          tabBarIcon: ({ focused }) => <TabIcon Icon={TerminalIcon} focused={focused} />,
         }}
       />
     </Tabs>

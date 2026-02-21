@@ -119,7 +119,7 @@ export default function RepositoryDetail() {
   const insets = useSafeAreaInsets();
   const {
     repositories, files, commits, selectedRepo, commitChanges,
-    switchBranch, createBranch, stageFile, unstageFile,
+    switchBranch, createBranch, stageFile, unstageFile, pushSelectedRepo,
   } = useGit();
 
   const repo = repositories.find(r => r.id === id);
@@ -214,9 +214,24 @@ export default function RepositoryDetail() {
             <ChevronDown size={12} color={Colors.accentPrimary} />
           </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.menuBtn}>
-          <MoreVertical size={20} color={Colors.textSecondary} />
-        </TouchableOpacity>
+        <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={styles.pushBtn}
+            onPress={() => {
+              if (Platform.OS !== 'web') {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }
+              pushSelectedRepo();
+            }}
+            activeOpacity={0.7}
+          >
+            <Send size={16} color={Colors.accentPrimary} />
+            <Text style={styles.pushText}>Push</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.menuBtn}>
+            <MoreVertical size={20} color={Colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {showBranchSelector && (
@@ -425,6 +440,11 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   headerTitle: {
     fontSize: 16,
     fontWeight: '600' as const,
@@ -446,6 +466,22 @@ const styles = StyleSheet.create({
     height: 44,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  pushBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    height: 32,
+    borderRadius: Radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.accentPrimary,
+    backgroundColor: Colors.accentPrimaryDim,
+  },
+  pushText: {
+    fontSize: 12,
+    fontWeight: '600' as const,
+    color: Colors.accentPrimary,
   },
   branchDropdown: {
     backgroundColor: Colors.bgElevated,

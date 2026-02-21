@@ -1,53 +1,110 @@
-import React, { useState } from 'react';
+import React, { useState } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, TextInput, TouchableOpacity,
-  Modal, Platform, Alert,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TextInput,
+  TouchableOpacity,
+  Modal,
+  Platform,
+  Alert,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
-  User, Mail, Bell, BellOff, Palette, Type, HardDrive, Trash2,
-  Download, Wifi, Eye, RefreshCw, HeartPulse, FileText, Info,
-  Shield, FileCheck, X, Check,
-} from 'lucide-react-native';
-import * as Haptics from 'expo-haptics';
-import Colors from '@/constants/colors';
-import { Spacing, Radius } from '@/constants/theme';
-import { useGit } from '@/contexts/GitContext';
-import SettingsSection from '@/components/SettingsSection';
-import SettingsRow from '@/components/SettingsRow';
+  User,
+  Mail,
+  Bell,
+  BellOff,
+  Palette,
+  Type,
+  HardDrive,
+  Trash2,
+  Download,
+  Wifi,
+  Eye,
+  RefreshCw,
+  HeartPulse,
+  FileText,
+  Info,
+  Shield,
+  FileCheck,
+  X,
+  Check,
+} from "lucide-react-native";
+import * as Haptics from "expo-haptics";
+import Colors from "@/constants/colors";
+import { Spacing, Radius } from "@/constants/theme";
+import { useGit } from "@/contexts/GitContext";
+import SettingsSection from "@/components/SettingsSection";
+import SettingsRow from "@/components/SettingsRow";
+import {
+  startDeviceAuth,
+  openVerificationUrl,
+  pollDeviceToken,
+} from "@/services/github/api";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { settings, updateSettings, showToast } = useGit();
-  const [editModal, setEditModal] = useState<'name' | 'email' | null>(null);
-  const [editValue, setEditValue] = useState('');
+  const [editModal, setEditModal] = useState<
+    "name" | "email" | "github" | "githubClientId" | null
+  >(null);
+  const [editValue, setEditValue] = useState("");
 
-  const openEdit = (field: 'name' | 'email') => {
-    setEditValue(field === 'name' ? settings.userConfig.name : settings.userConfig.email);
+  const openEdit = (field: "name" | "email" | "github" | "githubClientId") => {
+    setEditValue(
+      field === "name"
+        ? settings.userConfig.name
+        : field === "email"
+        ? settings.userConfig.email
+        : field === "github"
+        ? settings.githubToken ?? ""
+        : settings.githubClientId ?? ""
+    );
     setEditModal(field);
   };
 
   const saveEdit = () => {
     if (!editModal) return;
-    if (Platform.OS !== 'web') {
+    if (Platform.OS !== "web") {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
-    if (editModal === 'name') {
-      updateSettings({ userConfig: { ...settings.userConfig, name: editValue } });
-    } else {
-      updateSettings({ userConfig: { ...settings.userConfig, email: editValue } });
+    if (editModal === "name") {
+      updateSettings({
+        userConfig: { ...settings.userConfig, name: editValue },
+      });
+    } else if (editModal === "email") {
+      updateSettings({
+        userConfig: { ...settings.userConfig, email: editValue },
+      });
+    } else if (editModal === "github") {
+      updateSettings({ githubToken: editValue.trim() || null });
+    } else if (editModal === "githubClientId") {
+      updateSettings({ githubClientId: editValue.trim() || null });
     }
-    showToast('success', `${editModal === 'name' ? 'Name' : 'Email'} updated`);
+    showToast(
+      "success",
+      `${
+        editModal === "name"
+          ? "Name"
+          : editModal === "email"
+          ? "Email"
+          : editModal === "github"
+          ? "GitHub Token"
+          : "GitHub Client ID"
+      } updated`
+    );
     setEditModal(null);
   };
 
   const handleClearCache = () => {
-    Alert.alert('Clear Cache', 'This will remove 45 MB of cached data.', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert("Clear Cache", "This will remove 45 MB of cached data.", [
+      { text: "Cancel", style: "cancel" },
       {
-        text: 'Clear',
-        style: 'destructive',
-        onPress: () => showToast('success', 'Cache cleared'),
+        text: "Clear",
+        style: "destructive",
+        onPress: () => showToast("success", "Cache cleared"),
       },
     ]);
   };
@@ -58,19 +115,64 @@ export default function SettingsScreen() {
         <Text style={styles.headerTitle}>Settings</Text>
       </View>
 
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         <SettingsSection title="Git Identity">
           <SettingsRow
             icon={<User size={18} color={Colors.accentPrimary} />}
             title="User Name"
             value={settings.userConfig.name}
-            onPress={() => openEdit('name')}
+            onPress={() => openEdit("name")}
           />
           <SettingsRow
             icon={<Mail size={18} color={Colors.accentPrimary} />}
             title="Email Address"
             value={settings.userConfig.email}
-            onPress={() => openEdit('email')}
+            onPress={() => openEdit("email")}
+            isLast
+          />
+        </SettingsSection>
+
+        <SettingsSection title="GitHub">
+          <SettingsRow
+            icon={<Shield size={18} color={Colors.accentPrimary} />}
+            title="Access Token"
+            value={settings.githubToken ? "••••••••" : "Not set"}
+            onPress={() => openEdit("github")}
+          />
+          <SettingsRow
+            icon={<Shield size={18} color={Colors.accentPrimary} />}
+            title="Client ID"
+            value={
+              settings.githubClientId ? settings.githubClientId : "Not set"
+            }
+            onPress={() => openEdit("githubClientId")}
+          />
+          <SettingsRow
+            icon={<Shield size={18} color={Colors.accentPrimary} />}
+            title="Sign in to GitHub"
+            onPress={async () => {
+              if (!settings.githubClientId) {
+                showToast("warning", "Set GitHub Client ID first");
+                return;
+              }
+              try {
+                const flow = await startDeviceAuth(settings.githubClientId);
+                await openVerificationUrl(flow.verification_uri);
+                const token = await pollDeviceToken(
+                  settings.githubClientId,
+                  flow.device_code,
+                  flow.interval
+                );
+                updateSettings({ githubToken: token });
+                showToast("success", "GitHub account linked");
+              } catch (err: any) {
+                showToast("error", err?.message ?? "GitHub sign-in failed");
+              }
+            }}
             isLast
           />
         </SettingsSection>
@@ -81,35 +183,64 @@ export default function SettingsScreen() {
             title="Commit Success"
             isToggle
             toggleValue={settings.notifications.commitSuccess}
-            onToggle={(val) => updateSettings({ notifications: { ...settings.notifications, commitSuccess: val } })}
+            onToggle={(val) =>
+              updateSettings({
+                notifications: {
+                  ...settings.notifications,
+                  commitSuccess: val,
+                },
+              })
+            }
           />
           <SettingsRow
             icon={<BellOff size={18} color={Colors.accentDanger} />}
             title="Commit Failed"
             isToggle
             toggleValue={settings.notifications.commitFailed}
-            onToggle={(val) => updateSettings({ notifications: { ...settings.notifications, commitFailed: val } })}
+            onToggle={(val) =>
+              updateSettings({
+                notifications: { ...settings.notifications, commitFailed: val },
+              })
+            }
           />
           <SettingsRow
             icon={<Bell size={18} color={Colors.accentWarning} />}
             title="Merge Conflicts"
             isToggle
             toggleValue={settings.notifications.mergeConflicts}
-            onToggle={(val) => updateSettings({ notifications: { ...settings.notifications, mergeConflicts: val } })}
+            onToggle={(val) =>
+              updateSettings({
+                notifications: {
+                  ...settings.notifications,
+                  mergeConflicts: val,
+                },
+              })
+            }
           />
           <SettingsRow
             icon={<Bell size={18} color={Colors.textMuted} />}
             title="Background Tasks"
             isToggle
             toggleValue={settings.notifications.backgroundTasks}
-            onToggle={(val) => updateSettings({ notifications: { ...settings.notifications, backgroundTasks: val } })}
+            onToggle={(val) =>
+              updateSettings({
+                notifications: {
+                  ...settings.notifications,
+                  backgroundTasks: val,
+                },
+              })
+            }
           />
           <SettingsRow
             icon={<Bell size={18} color={Colors.accentInfo} />}
             title="P2P Transfers"
             isToggle
             toggleValue={settings.notifications.p2pTransfers}
-            onToggle={(val) => updateSettings({ notifications: { ...settings.notifications, p2pTransfers: val } })}
+            onToggle={(val) =>
+              updateSettings({
+                notifications: { ...settings.notifications, p2pTransfers: val },
+              })
+            }
             isLast
           />
         </SettingsSection>
@@ -125,7 +256,8 @@ export default function SettingsScreen() {
             title="Code Font Size"
             value={`${settings.codeFontSize}px`}
             onPress={() => {
-              const newSize = settings.codeFontSize >= 18 ? 10 : settings.codeFontSize + 1;
+              const newSize =
+                settings.codeFontSize >= 18 ? 10 : settings.codeFontSize + 1;
               updateSettings({ codeFontSize: newSize });
             }}
             isLast
@@ -148,7 +280,7 @@ export default function SettingsScreen() {
           <SettingsRow
             icon={<Download size={18} color={Colors.accentPrimary} />}
             title="Export All"
-            onPress={() => showToast('info', 'Export started')}
+            onPress={() => showToast("info", "Export started")}
             isLast
           />
         </SettingsSection>
@@ -187,12 +319,12 @@ export default function SettingsScreen() {
           <SettingsRow
             icon={<Trash2 size={18} color={Colors.accentPrimary} />}
             title="Garbage Collection"
-            onPress={() => showToast('success', 'GC completed')}
+            onPress={() => showToast("success", "GC completed")}
           />
           <SettingsRow
             icon={<HeartPulse size={18} color={Colors.accentPrimary} />}
             title="Repository Health"
-            onPress={() => showToast('success', 'All repos healthy')}
+            onPress={() => showToast("success", "All repos healthy")}
           />
           <SettingsRow
             icon={<FileText size={18} color={Colors.textSecondary} />}
@@ -208,24 +340,14 @@ export default function SettingsScreen() {
             title="Version"
             value="1.0.0"
           />
-          <SettingsRow
-            title="Build"
-            value="20260221"
-          />
+          <SettingsRow title="Build" value="20260221" />
           <SettingsRow
             icon={<FileCheck size={18} color={Colors.textSecondary} />}
             title="Open Source Licenses"
             onPress={() => {}}
           />
-          <SettingsRow
-            title="Privacy Policy"
-            onPress={() => {}}
-          />
-          <SettingsRow
-            title="Terms of Service"
-            onPress={() => {}}
-            isLast
-          />
+          <SettingsRow title="Privacy Policy" onPress={() => {}} />
+          <SettingsRow title="Terms of Service" onPress={() => {}} isLast />
         </SettingsSection>
 
         <View style={{ height: 100 }} />
@@ -244,7 +366,13 @@ export default function SettingsScreen() {
                 <X size={22} color={Colors.textSecondary} />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>
-                {editModal === 'name' ? 'Edit Name' : 'Edit Email'}
+                {editModal === "name"
+                  ? "Edit Name"
+                  : editModal === "email"
+                  ? "Edit Email"
+                  : editModal === "github"
+                  ? "GitHub Access Token"
+                  : "GitHub Client ID"}
               </Text>
               <TouchableOpacity onPress={saveEdit}>
                 <Check size={22} color={Colors.accentPrimary} />
@@ -254,14 +382,24 @@ export default function SettingsScreen() {
               style={styles.modalInput}
               value={editValue}
               onChangeText={setEditValue}
-              placeholder={editModal === 'name' ? 'Your name' : 'your@email.com'}
+              placeholder={
+                editModal === "name"
+                  ? "Your name"
+                  : editModal === "email"
+                  ? "your@email.com"
+                  : editModal === "github"
+                  ? "ghp_xxx..."
+                  : "Iv1.XXXXX"
+              }
               placeholderTextColor={Colors.textMuted}
               autoFocus
-              keyboardType={editModal === 'email' ? 'email-address' : 'default'}
-              autoCapitalize={editModal === 'email' ? 'none' : 'words'}
+              keyboardType={editModal === "email" ? "email-address" : "default"}
+              autoCapitalize={editModal === "email" ? "none" : "none"}
             />
             <Text style={styles.modalHelper}>
-              Used for all commits from this device
+              {editModal === "github"
+                ? "Used for cloning and pushing to GitHub"
+                : "Used for all commits from this device"}
             </Text>
           </View>
         </View>
@@ -277,7 +415,7 @@ const styles = StyleSheet.create({
   },
   header: {
     height: 60,
-    justifyContent: 'center',
+    justifyContent: "center",
     paddingHorizontal: Spacing.md,
     backgroundColor: Colors.bgSecondary,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -285,7 +423,7 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 22,
-    fontWeight: '600' as const,
+    fontWeight: "600" as const,
     color: Colors.textPrimary,
   },
   scroll: {
@@ -297,8 +435,8 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'center',
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
     padding: Spacing.lg,
   },
   modalContent: {
@@ -309,14 +447,14 @@ const styles = StyleSheet.create({
     borderColor: Colors.borderDefault,
   },
   modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginBottom: Spacing.lg,
   },
   modalTitle: {
     fontSize: 17,
-    fontWeight: '600' as const,
+    fontWeight: "600" as const,
     color: Colors.textPrimary,
   },
   modalInput: {

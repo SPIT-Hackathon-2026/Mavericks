@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import createContextHook from '@nkzw/create-context-hook';
-import { Repository, ConflictFile, AppSettings } from '@/types/git';
+import { Repository, ConflictFile, AppSettings, GitHubRepo } from '@/types/git';
+import { listUserRepos } from '@/services/github/api';
 import { mockConflicts } from '@/mocks/repositories';
 import { gitEngine } from '@/services/git/engine';
 import { storage } from '@/services/storage/storage';
@@ -23,6 +24,8 @@ const defaultSettings: AppSettings = {
   autoAcceptKnown: true,
   discoveryVisible: true,
   enableReflog: true,
+  githubToken: null,
+  githubClientId: null,
 };
 
 const SETTINGS_KEY = 'gitlane:settings';
@@ -44,6 +47,15 @@ export const [GitProvider, useGit] = createContextHook(() => {
   const repositoriesQuery = useQuery({
     queryKey: ['repositories'],
     queryFn: () => gitEngine.listRepositories(),
+  });
+
+  const githubReposQuery = useQuery({
+    queryKey: ['githubRepos', settings.githubToken],
+    queryFn: async () => {
+      if (!settings.githubToken) return [] as GitHubRepo[];
+      return listUserRepos(settings.githubToken);
+    },
+    enabled: !!settings.githubToken,
   });
 
   const saveSettingsMutation = useMutation({
@@ -164,7 +176,7 @@ export const [GitProvider, useGit] = createContextHook(() => {
     setIsCloning(true);
     console.log(TAG, `cloneRepository("${url}", "${name}")`);
     try {
-      const repo = await gitEngine.cloneRepo(url, name);
+      const repo = await gitEngine.cloneRepo(url, name, undefined, settings.githubToken ?? undefined);
       queryClient.invalidateQueries({ queryKey: ['repositories'] });
       showToast('success', `Cloned "${repo.name}"`);
       setIsCloning(false);
@@ -176,7 +188,22 @@ export const [GitProvider, useGit] = createContextHook(() => {
       showToast('error', message);
       throw err;
     }
-  }, [queryClient]);
+  }, [queryClient, settings.githubToken]);
+
+  const cloneGitHubRepo = useCallback(async (gh: GitHubRepo) => {
+    const name = gh.name;
+    return cloneRepository(gh.clone_url, name);
+  }, [cloneRepository]);
+
+  const pushSelectedRepo = useCallback(async () => {
+    if (!selectedRepo) return;
+    if (!settings.githubToken) {
+      showToast('warning', 'GitHub token not set');
+      return;
+    }
+    await gitEngine.push(selectedRepo.id, settings.githubToken);
+    showToast('success', 'Pushed to origin');
+  }, [selectedRepo, settings.githubToken]);
 
   const mergeInto = useCallback(async (repoId: string, theirBranch: string) => {
     const repo = repositoriesQuery.data?.find(r => r.id === repoId);
@@ -213,6 +240,7 @@ export const [GitProvider, useGit] = createContextHook(() => {
 
   return {
     repositories: repositoriesQuery.data ?? [],
+    githubRepos: githubReposQuery.data ?? [],
     selectedRepo,
     selectedRepoId,
     setSelectedRepoId,
@@ -224,6 +252,8 @@ export const [GitProvider, useGit] = createContextHook(() => {
     addRepository,
     deleteRepository,
     cloneRepository,
+    cloneGitHubRepo,
+    pushSelectedRepo,
     mergeInto,
     switchBranch,
     createBranch,
@@ -234,6 +264,6 @@ export const [GitProvider, useGit] = createContextHook(() => {
     toastMessage,
     showToast,
     isCloning,
-    isLoading: settingsQuery.isLoading || repositoriesQuery.isLoading || filesQuery.isLoading || commitsQuery.isLoading,
+    isLoading: settingsQuery.isLoading || repositoriesQuery.isLoading || filesQuery.isLoading || commitsQuery.isLoading || githubReposQuery.isLoading,
   };
 });

@@ -39,6 +39,7 @@ import Colors from "@/constants/colors";
 import { Spacing, Radius, Shadows } from "@/constants/theme";
 import { useGit } from "@/contexts/GitContext";
 import type { GitFile } from "@/types/git";
+import { expoFS } from "@/services/git/expo-fs";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const TREE_PANEL_WIDTH = SCREEN_WIDTH * 0.78;
@@ -95,6 +96,7 @@ interface TreeNodeProps {
   onSelectFile: (file: GitFile) => void;
   expandedDirs: Set<string>;
   onToggleDir: (id: string) => void;
+  onToggleStage: (file: GitFile) => void;
 }
 
 function TreeNode({
@@ -104,6 +106,7 @@ function TreeNode({
   onSelectFile,
   expandedDirs,
   onToggleDir,
+  onToggleStage,
 }: TreeNodeProps) {
   const isExpanded = expandedDirs.has(file.id);
   const isActive = !file.isDirectory && file.path === currentFilePath;
@@ -149,8 +152,16 @@ function TreeNode({
         >
           {file.name}
         </Text>
-        {statusColor && (
-          <Circle size={6} color={statusColor} fill={statusColor} />
+        {statusColor && !file.isDirectory && (
+          <TouchableOpacity
+            style={treeStyles.stageBtn}
+            onPress={() => onToggleStage(file)}
+            activeOpacity={0.6}
+          >
+            <Text style={treeStyles.stageText}>
+              {file.status === "staged" ? "Unstage" : "Stage"}
+            </Text>
+          </TouchableOpacity>
         )}
       </TouchableOpacity>
 
@@ -165,6 +176,7 @@ function TreeNode({
             onSelectFile={onSelectFile}
             expandedDirs={expandedDirs}
             onToggleDir={onToggleDir}
+            onToggleStage={onToggleStage}
           />
         ))}
     </>
@@ -231,6 +243,7 @@ export default function FileViewer() {
   const [copied, setCopied] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
   const [toastVisible, setToastVisible] = useState(false);
+  const [lintError, setLintError] = useState<string | null>(null);
 
   // tree drawer
   const [treeOpen, setTreeOpen] = useState(false);
@@ -260,6 +273,57 @@ export default function FileViewer() {
     [filePath]
   );
   const canCommit = editContent !== content && commitMsg.trim().length > 0;
+
+  function validateJSON(text: string): string | null {
+    try {
+      JSON.parse(text);
+      return null;
+    } catch (e: any) {
+      return e?.message ?? "Invalid JSON";
+    }
+  }
+  function validateJS(text: string): string | null {
+    try {
+      // parse only; do not execute
+      // eslint-disable-next-line no-new-func
+      new Function(text);
+      return null;
+    } catch (e: any) {
+      return e?.message ?? "Syntax error";
+    }
+  }
+  function validateBalance(text: string): string | null {
+    const s = text;
+    const pairs: [string, string][] = [
+      ["(", ")"],
+      ["{", "}"],
+      ["[", "]"],
+    ];
+    for (const [open, close] of pairs) {
+      let count = 0;
+      for (const ch of s) {
+        if (ch === open) count++;
+        else if (ch === close) count--;
+      }
+      if (count !== 0) return `Unbalanced ${open}${close}`;
+    }
+    return null;
+  }
+  React.useEffect(() => {
+    if (mode !== "edit") {
+      setLintError(null);
+      return;
+    }
+    if (fileExt === "json") {
+      setLintError(validateJSON(editContent));
+    } else if (fileExt === "js") {
+      setLintError(validateJS(editContent));
+    } else if (fileExt === "ts" || fileExt === "tsx" || fileExt === "jsx") {
+      setLintError(validateBalance(editContent));
+    } else {
+      setLintError(null);
+    }
+  }, [editContent, fileExt, mode]);
 
   // ── Tree open / close ────────────────────────────────────────────────
   const openTree = useCallback(() => {
@@ -320,6 +384,19 @@ export default function FileViewer() {
     [closeTree]
   );
 
+  const { stageFile, unstageFile } = useGit();
+  const toggleStage = useCallback(
+    async (file: GitFile) => {
+      const rel = file.path.replace(/^\//, "");
+      if (file.status === "staged") {
+        await unstageFile(rel);
+      } else {
+        await stageFile(rel);
+      }
+    },
+    [stageFile, unstageFile]
+  );
+
   // ── Copy ─────────────────────────────────────────────────────────────
   const handleCopy = useCallback(async () => {
     await Clipboard.setStringAsync(content);
@@ -341,16 +418,35 @@ export default function FileViewer() {
   );
 
   // ── Commit ────────────────────────────────────────────────────────────
-  const handleCommit = useCallback(() => {
-    if (!canCommit) return;
-    setContent(editContent);
-    setCommitMsg("");
-    setMode("view");
-    setToastVisible(true);
-    setTimeout(() => setToastVisible(false), 3000);
-    if (Platform.OS !== "web")
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-  }, [canCommit, editContent]);
+  const { commitChanges } = useGit();
+  const handleCommit = useCallback(async () => {
+    if (!canCommit || !selectedRepo) return;
+    const relPath = filePath.replace(/^\//, "");
+    const fullPath = `${selectedRepo.path}/${relPath}`;
+    try {
+      await expoFS.promises.writeFile(fullPath, editContent, "utf8");
+      await stageFile(relPath);
+      await commitChanges(commitMsg.trim());
+      setContent(editContent);
+      setCommitMsg("");
+      setMode("view");
+      setToastVisible(true);
+      setTimeout(() => setToastVisible(false), 3000);
+      if (Platform.OS !== "web")
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err) {
+      if (Platform.OS !== "web")
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
+  }, [
+    canCommit,
+    editContent,
+    commitMsg,
+    filePath,
+    selectedRepo,
+    stageFile,
+    commitChanges,
+  ]);
 
   const { Icon: FileIconComp, color: fileIconColor } = getFileIcon(fileExt);
 
@@ -463,6 +559,17 @@ export default function FileViewer() {
             <View style={styles.statDot} />
             <Text style={[styles.statText, { color: Colors.statusModified }]}>
               ● Unsaved
+            </Text>
+          </>
+        )}
+        {mode === "edit" && lintError && (
+          <>
+            <View style={styles.statDot} />
+            <Text
+              style={[styles.statText, { color: Colors.accentWarning }]}
+              numberOfLines={1}
+            >
+              {lintError}
             </Text>
           </>
         )}
@@ -616,6 +723,7 @@ export default function FileViewer() {
                   onSelectFile={handleSelectFile}
                   expandedDirs={expandedDirs}
                   onToggleDir={toggleDir}
+                  onToggleStage={toggleStage}
                 />
               ))}
               <View style={{ height: 60 }} />
@@ -967,6 +1075,18 @@ const treeStyles = StyleSheet.create({
   nodeNameActive: {
     color: Colors.accentPrimary,
     fontWeight: "600",
+  },
+  stageBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.bgTertiary,
+    borderWidth: 1,
+    borderColor: Colors.borderDefault,
+  },
+  stageText: {
+    fontSize: 11,
+    color: Colors.textSecondary,
   },
 });
 
