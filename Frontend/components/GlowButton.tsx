@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Text, StyleSheet, Animated, TouchableWithoutFeedback, Platform } from 'react-native';
+import { Text, StyleSheet, Animated, TouchableWithoutFeedback, Platform, ActivityIndicator } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import Colors from '@/constants/colors';
 import { Radius, Shadows } from '@/constants/theme';
@@ -9,13 +9,14 @@ interface GlowButtonProps {
   onPress: () => void;
   variant?: 'primary' | 'secondary' | 'outline' | 'danger' | 'ghost';
   disabled?: boolean;
+  loading?: boolean;
   icon?: React.ReactNode;
   fullWidth?: boolean;
   size?: 'sm' | 'md' | 'lg';
 }
 
 export default function GlowButton({
-  title, onPress, variant = 'primary', disabled = false, icon, fullWidth = false, size = 'md',
+  title, onPress, variant = 'primary', disabled = false, loading = false, icon, fullWidth = false, size = 'md',
 }: GlowButtonProps) {
   const scale = useRef(new Animated.Value(1)).current;
 
@@ -28,7 +29,7 @@ export default function GlowButton({
   };
 
   const handlePress = () => {
-    if (disabled) return;
+    if (disabled || loading) return;
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
@@ -54,12 +55,14 @@ export default function GlowButton({
           variant === 'outline' && styles.outline,
           variant === 'danger' && styles.danger,
           variant === 'ghost' && styles.ghost,
-          variant === 'primary' && !disabled && Shadows.glow,
-          disabled && styles.disabled,
+          variant === 'primary' && !disabled && !loading && Shadows.glow,
+          (disabled || loading) && styles.disabled,
           fullWidth && styles.fullWidth,
         ]}
       >
-        {icon}
+        {loading ? (
+          <ActivityIndicator size="small" color={variant === 'outline' ? Colors.accentPrimary : '#fff'} />
+        ) : icon}
         <Text
           style={[
             styles.text,

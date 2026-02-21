@@ -81,11 +81,12 @@ Git Bundles (Easiest),Low,Use isomorphic-git to create a .bundle file. Use the p
 QR Code (Small Repos),Medium,Convert a small patch or commit into a series of QR codes to be scanned by the other phone.
 Local Socket (Hardest),High,"Use react-native-tcp-socket to create a mini-server on one phone that the other phone ""clones"" from over the same Wi-Fi."
 
-Merge Conflict
-P2P transfer
-Notification
-Offline Agent
-Offline Code editor
+Merge Conflict hard
+P2P transfer hardcoded
+Create Branch
+Notification easy
+Offline Agent easy-medium
+Offline Code editor medium-hard
 
 
 
