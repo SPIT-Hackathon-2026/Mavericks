@@ -1,34 +1,34 @@
-import React, { useRef, useCallback } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Animated,
-  TouchableWithoutFeedback,
-  RefreshControl,
-  Platform,
-} from "react-native";
-import { useRouter } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import {
-  GitBranch,
-  Plus,
-  FolderGit2,
-  FileWarning,
-  FolderX,
-  MoreVertical,
-  Clock,
-  MessageCircle,
-  Shield,
-} from "lucide-react-native";
-import * as Haptics from "expo-haptics";
-import Colors from "@/constants/colors";
-import { Spacing, Radius, Shadows } from "@/constants/theme";
-import { useGit } from "@/contexts/GitContext";
 import EmptyState from "@/components/EmptyState";
+import Colors from "@/constants/colors";
+import { Radius, Shadows, Spacing } from "@/constants/theme";
+import { useGit } from "@/contexts/GitContext";
 import type { Repository } from "@/types/git";
+import * as Haptics from "expo-haptics";
+import { useRouter } from "expo-router";
+import {
+    Clock,
+    FileWarning,
+    FolderGit2,
+    FolderX,
+    GitBranch,
+    MessageCircle,
+    MoreVertical,
+    Plus,
+} from "lucide-react-native";
+import React, { useCallback, useRef } from "react";
+import {
+    Animated,
+    Platform,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    TouchableWithoutFeedback,
+    View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 function RepoCard({
   repo,
@@ -62,18 +62,18 @@ function RepoCard({
   const IconComponent = hasConflicts
     ? FolderX
     : hasModified
-    ? FileWarning
-    : FolderGit2;
+      ? FileWarning
+      : FolderGit2;
   const iconBg = hasConflicts
     ? Colors.accentDanger
     : hasModified
-    ? "rgba(234,179,8,0.15)"
-    : Colors.bgTertiary;
+      ? "rgba(234,179,8,0.15)"
+      : Colors.bgTertiary;
   const iconColor = hasConflicts
     ? "#FFFFFF"
     : hasModified
-    ? Colors.accentWarning
-    : Colors.accentPrimary;
+      ? Colors.accentWarning
+      : Colors.accentPrimary;
 
   return (
     <TouchableWithoutFeedback
@@ -165,6 +165,7 @@ export default function ReposScreen() {
     settings,
   } = useGit();
   const [refreshing, setRefreshing] = React.useState(false);
+  const [search, setSearch] = React.useState("");
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -179,7 +180,7 @@ export default function ReposScreen() {
       setSelectedRepoId(repo.id);
       router.push(`/repository/${repo.id}`);
     },
-    [router, setSelectedRepoId]
+    [router, setSelectedRepoId],
   );
 
   const openAddRepo = useCallback(() => {
@@ -237,36 +238,31 @@ export default function ReposScreen() {
             />
           }
         >
-          {settings.githubToken && (
-            <>
-              <View style={styles.ghHeader}>
-                <Shield size={14} color={Colors.accentPrimary} />
-                <Text style={styles.ghHeaderText}>GitHub Repositories</Text>
-              </View>
-              {githubRepos.map((gh) => (
-                <View key={gh.id} style={styles.ghRow}>
-                  <Text style={styles.ghName} numberOfLines={1}>
-                    {gh.full_name}
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.ghCloneBtn}
-                    onPress={() => cloneGitHubRepo(gh)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.ghCloneText}>Clone</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-              <View style={{ height: 12 }} />
-            </>
-          )}
-          {repositories.map((repo) => (
-            <RepoCard
-              key={repo.id}
-              repo={repo}
-              onPress={() => openRepo(repo)}
+          <View style={styles.searchWrap}>
+            <TextInput
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search repositories…"
+              placeholderTextColor={Colors.textMuted}
+              style={styles.searchInput}
+              autoCapitalize="none"
+              autoCorrect={false}
             />
-          ))}
+          </View>
+          {/* Local repositories only */}
+          {repositories
+            .filter((r) =>
+              (r.name + " " + r.path)
+                .toLowerCase()
+                .includes(search.toLowerCase()),
+            )
+            .map((repo) => (
+              <RepoCard
+                key={repo.id}
+                repo={repo}
+                onPress={() => openRepo(repo)}
+              />
+            ))}
           <View style={{ height: 100 }} />
         </ScrollView>
       )}
@@ -329,6 +325,19 @@ const styles = StyleSheet.create({
   },
   listContent: {
     padding: Spacing.md,
+  },
+  searchWrap: {
+    backgroundColor: Colors.bgSecondary,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.borderDefault,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  searchInput: {
+    fontSize: 14,
+    color: Colors.textPrimary,
   },
   repoCard: {
     backgroundColor: Colors.bgSecondary,
@@ -414,50 +423,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: Colors.textMuted,
   },
-  ghHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginBottom: 8,
-  },
-  ghHeaderText: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    fontWeight: "600" as const,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  ghRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: Colors.bgSecondary,
-    borderWidth: 1,
-    borderColor: Colors.borderDefault,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 10,
-    marginBottom: 8,
-  },
-  ghName: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: 14,
-    marginRight: 12,
-  },
-  ghCloneBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: Radius.sm,
-    backgroundColor: Colors.accentPrimaryDim,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.accentPrimary,
-  },
-  ghCloneText: {
-    color: Colors.accentPrimary,
-    fontWeight: "600" as const,
-    fontSize: 12,
-  },
+  /* GitHub list styles removed */
   fab: {
     position: "absolute",
     right: Spacing.lg,

@@ -1,48 +1,49 @@
-import React, { useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TextInput,
-  TouchableOpacity,
-  Modal,
-  Platform,
-  Alert,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import {
-  User,
-  Mail,
-  Bell,
-  BellOff,
-  Palette,
-  Type,
-  HardDrive,
-  Trash2,
-  Download,
-  Wifi,
-  Eye,
-  RefreshCw,
-  HeartPulse,
-  FileText,
-  Info,
-  Shield,
-  FileCheck,
-  X,
-  Check,
-} from "lucide-react-native";
-import * as Haptics from "expo-haptics";
-import Colors from "@/constants/colors";
-import { Spacing, Radius } from "@/constants/theme";
-import { useGit } from "@/contexts/GitContext";
-import SettingsSection from "@/components/SettingsSection";
 import SettingsRow from "@/components/SettingsRow";
+import SettingsSection from "@/components/SettingsSection";
+import Colors from "@/constants/colors";
+import { Radius, Spacing } from "@/constants/theme";
+import { useGit } from "@/contexts/GitContext";
 import {
-  startDeviceAuth,
   openVerificationUrl,
   pollDeviceToken,
+  startDeviceAuth,
 } from "@/services/github/api";
+import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
+import {
+  Bell,
+  BellOff,
+  Check,
+  Download,
+  Eye,
+  FileCheck,
+  FileText,
+  HardDrive,
+  HeartPulse,
+  Info,
+  Mail,
+  Palette,
+  RefreshCw,
+  Shield,
+  Trash2,
+  Type,
+  User,
+  Wifi,
+  X,
+} from "lucide-react-native";
+import React, { useState } from "react";
+import {
+  Alert,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -51,16 +52,23 @@ export default function SettingsScreen() {
     "name" | "email" | "github" | "githubClientId" | null
   >(null);
   const [editValue, setEditValue] = useState("");
+  const [deviceModalVisible, setDeviceModalVisible] = useState(false);
+  const [deviceUserCode, setDeviceUserCode] = useState("");
+  const [deviceVerificationUrl, setDeviceVerificationUrl] = useState("");
+  const [devicePolling, setDevicePolling] = useState(false);
+  const [deviceStatus, setDeviceStatus] = useState<
+    "idle" | "waiting" | "verified" | "error"
+  >("idle");
 
   const openEdit = (field: "name" | "email" | "github" | "githubClientId") => {
     setEditValue(
       field === "name"
         ? settings.userConfig.name
         : field === "email"
-        ? settings.userConfig.email
-        : field === "github"
-        ? settings.githubToken ?? ""
-        : settings.githubClientId ?? ""
+          ? settings.userConfig.email
+          : field === "github"
+            ? (settings.githubToken ?? "")
+            : (settings.githubClientId ?? ""),
     );
     setEditModal(field);
   };
@@ -89,11 +97,11 @@ export default function SettingsScreen() {
         editModal === "name"
           ? "Name"
           : editModal === "email"
-          ? "Email"
-          : editModal === "github"
-          ? "GitHub Token"
-          : "GitHub Client ID"
-      } updated`
+            ? "Email"
+            : editModal === "github"
+              ? "GitHub Token"
+              : "GitHub Client ID"
+      } updated`,
     );
     setEditModal(null);
   };
@@ -161,14 +169,36 @@ export default function SettingsScreen() {
               }
               try {
                 const flow = await startDeviceAuth(settings.githubClientId);
-                await openVerificationUrl(flow.verification_uri);
-                const token = await pollDeviceToken(
+                setDeviceUserCode(flow.user_code);
+                setDeviceVerificationUrl(flow.verification_uri);
+                setDeviceModalVisible(true);
+                await Clipboard.setStringAsync(flow.user_code);
+                showToast(
+                  "info",
+                  `Enter GitHub code: ${flow.user_code} (copied)`,
+                );
+                setDevicePolling(true);
+                setDeviceStatus("waiting");
+                pollDeviceToken(
                   settings.githubClientId,
                   flow.device_code,
-                  flow.interval
-                );
-                updateSettings({ githubToken: token });
-                showToast("success", "GitHub account linked");
+                  flow.interval,
+                )
+                  .then((token) => {
+                    updateSettings({ githubToken: token });
+                    showToast("success", "GitHub account linked");
+                    setDevicePolling(false);
+                    setDeviceStatus("verified");
+                    setTimeout(() => {
+                      setDeviceModalVisible(false);
+                      setDeviceStatus("idle");
+                    }, 1200);
+                  })
+                  .catch((err: any) => {
+                    setDevicePolling(false);
+                    setDeviceStatus("error");
+                    showToast("error", err?.message ?? "GitHub sign-in failed");
+                  });
               } catch (err: any) {
                 showToast("error", err?.message ?? "GitHub sign-in failed");
               }
@@ -369,10 +399,10 @@ export default function SettingsScreen() {
                 {editModal === "name"
                   ? "Edit Name"
                   : editModal === "email"
-                  ? "Edit Email"
-                  : editModal === "github"
-                  ? "GitHub Access Token"
-                  : "GitHub Client ID"}
+                    ? "Edit Email"
+                    : editModal === "github"
+                      ? "GitHub Access Token"
+                      : "GitHub Client ID"}
               </Text>
               <TouchableOpacity onPress={saveEdit}>
                 <Check size={22} color={Colors.accentPrimary} />
@@ -386,10 +416,10 @@ export default function SettingsScreen() {
                 editModal === "name"
                   ? "Your name"
                   : editModal === "email"
-                  ? "your@email.com"
-                  : editModal === "github"
-                  ? "ghp_xxx..."
-                  : "Iv1.XXXXX"
+                    ? "your@email.com"
+                    : editModal === "github"
+                      ? "ghp_xxx..."
+                      : "Iv1.XXXXX"
               }
               placeholderTextColor={Colors.textMuted}
               autoFocus
@@ -400,6 +430,70 @@ export default function SettingsScreen() {
               {editModal === "github"
                 ? "Used for cloning and pushing to GitHub"
                 : "Used for all commits from this device"}
+            </Text>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={deviceModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeviceModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <TouchableOpacity onPress={() => setDeviceModalVisible(false)}>
+                <X size={22} color={Colors.textSecondary} />
+              </TouchableOpacity>
+              <Text style={styles.modalTitle}>GitHub Device Code</Text>
+              <View style={{ width: 22 }} />
+            </View>
+            <Text style={styles.deviceCode}>{deviceUserCode || "—"}</Text>
+            <View style={styles.deviceActions}>
+              <TouchableOpacity
+                style={[
+                  styles.actionBtn,
+                  {
+                    backgroundColor: Colors.bgTertiary,
+                    borderColor: Colors.borderDefault,
+                  },
+                ]}
+                onPress={async () => {
+                  if (!deviceUserCode) return;
+                  await Clipboard.setStringAsync(deviceUserCode);
+                  showToast("success", "Code copied");
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.actionText}>Copy Code</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionBtnPrimary]}
+                onPress={async () => {
+                  if (!deviceVerificationUrl) return;
+                  await openVerificationUrl(deviceVerificationUrl);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.actionText, { color: "#fff" }]}>
+                  {devicePolling ? "Verifying…" : "Open GitHub"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <Text
+              style={[
+                styles.modalHelper,
+                { textAlign: "center", marginTop: Spacing.sm },
+              ]}
+            >
+              {deviceStatus === "waiting" && "Waiting for approval…"}
+              {deviceStatus === "verified" && "Verified!"}
+              {deviceStatus === "error" && "Verification failed"}
+            </Text>
+            <Text style={styles.modalHelper}>
+              Enter the code on GitHub and return to the app.
             </Text>
           </View>
         </View>
@@ -471,5 +565,41 @@ const styles = StyleSheet.create({
   modalHelper: {
     fontSize: 13,
     color: Colors.textMuted,
+  },
+  deviceCode: {
+    fontSize: 22,
+    fontWeight: "700" as const,
+    letterSpacing: 2,
+    paddingVertical: Spacing.md,
+    color: Colors.textPrimary,
+    textAlign: "center",
+  },
+  deviceActions: {
+    flexDirection: "row",
+    gap: Spacing.md,
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: Spacing.md,
+  },
+  actionBtn: {
+    flex: 1,
+    height: 44,
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionBtnPrimary: {
+    flex: 1,
+    height: 44,
+    borderRadius: Radius.sm,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Colors.accentPrimary,
+  },
+  actionText: {
+    fontSize: 15,
+    fontWeight: "600" as const,
+    color: Colors.textPrimary,
   },
 });
