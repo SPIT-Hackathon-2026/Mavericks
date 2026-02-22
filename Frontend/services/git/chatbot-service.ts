@@ -430,3 +430,209 @@ export async function handleUserMessage(
     return formatFallback(result);
   }
 }
+
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║  FILE CHAT — attach a file, explain it, edit it, commit the result       ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
+
+/** Max lines sent to the LLM — keeps the prompt within n_ctx 1024 tokens */
+const MAX_FILE_LINES = 60;
+
+/**
+ * A file that has been attached to the chat session.
+ * Content is stored here (truncated if the file is too large).
+ */
+export interface ActiveFile {
+  /** Repo ID (used for stageFile / commit when applying edits) */
+  repoId: string;
+  /** Full POSIX path that expoFS can write: /repos/<id>/src/index.ts */
+  absolutePath: string;
+  /** Path relative to repo root: src/index.ts */
+  relativePath: string;
+  /** Filename only: index.ts */
+  name: string;
+  /** File text (possibly truncated to MAX_FILE_LINES) */
+  content: string;
+  /** Total line count of the original file */
+  lineCount: number;
+  /** Whether the content was truncated */
+  truncated: boolean;
+}
+
+/** Result returned by handleFileMessage */
+export interface FileEditResult {
+  action:         'EXPLAIN' | 'EDIT';
+  /** For EXPLAIN: the explanation. For EDIT: a short description of the change. */
+  text:           string;
+  /** Full corrected file content (EDIT only) */
+  newContent?:    string;
+  /** Suggested git commit message (EDIT only) */
+  commitMessage?: string;
+}
+
+/**
+ * Read a file from device storage and prepare it for LLM context.
+ * Truncates to MAX_FILE_LINES and rejects binary files.
+ */
+export async function readFileForChat(
+  absolutePath: string,
+  relativePath: string,
+  repoId: string,
+): Promise<ActiveFile> {
+  const name = relativePath.split('/').pop() ?? relativePath;
+
+  let raw: string;
+  try {
+    const buf = await expoFS.promises.readFile(absolutePath, 'utf8');
+    raw = buf as string;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Cannot read "${name}": ${msg}`);
+  }
+
+  // Detect binary content (null bytes / non-printable control characters)
+  if (/[\x00-\x08\x0e-\x1f]/.test(raw)) {
+    throw new Error(`"${name}" appears to be a binary file and cannot be opened in chat.`);
+  }
+
+  const allLines  = raw.split('\n');
+  const lineCount = allLines.length;
+  const truncated = lineCount > MAX_FILE_LINES;
+  const content   = truncated ? allLines.slice(0, MAX_FILE_LINES).join('\n') : raw;
+
+  return { repoId, absolutePath, relativePath, name, content, lineCount, truncated };
+}
+
+// ── File-chat LLM prompt ──────────────────────────────────────────────────────
+
+const FILE_SYSTEM =
+  'You are a code editor assistant. The user will show you a source file and a request.\n' +
+  'Rules:\n' +
+  '  • If the request is a CODE CHANGE (add, fix, refactor, implement, remove, rename):\n' +
+  '    → respond with ONLY raw JSON on a single logical block, NO markdown, NO backticks, NO prose:\n' +
+  '    {"action":"EDIT","newContent":"<FULL corrected file>","commitMessage":"<imperative verb phrase>"}\n' +
+  '    newContent must be the COMPLETE file with the change applied — never a snippet or diff.\n' +
+  '  • If the request is a question, explanation, or review:\n' +
+  '    → reply in plain English. No JSON at all.\n' +
+  'CRITICAL: Do NOT wrap JSON in backticks or markdown code fences. Output raw JSON only.';
+
+function buildFileUserMsg(file: ActiveFile, request: string): string {
+  const warn = file.truncated
+    ? `\n[File has ${file.lineCount} lines; showing first ${MAX_FILE_LINES}]`
+    : '';
+  return (
+    `File: ${file.name}${warn}\n` +
+    '```\n' + file.content + '\n```\n\n' +
+    `Request: ${request}`
+  );
+}
+
+/**
+ * Send a file + user request to the LLM.
+ * The LLM decides whether to explain or return an EDIT JSON block.
+ */
+export async function handleFileMessage(
+  userInput:  string,
+  activeFile: ActiveFile,
+): Promise<FileEditResult> {
+  const raw = await callLLM({
+    systemPrompt: FILE_SYSTEM,
+    userMessage:  buildFileUserMsg(activeFile, userInput),
+    maxTokens:    600,
+  });
+
+  // ── Robust JSON extraction ─────────────────────────────────────────────────
+  // Handles: raw JSON, ```json...```, ``` ...```, prose before/after the block
+  function extractJSON(text: string): { action?: string; newContent?: string; commitMessage?: string } | null {
+    // 1. Strip any wrapping markdown fence (including when there's prose before it)
+    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fenceMatch ? fenceMatch[1].trim() : text.trim();
+
+    // 2. Try parsing the candidate directly
+    try { return JSON.parse(candidate); } catch { /* fall through */ }
+
+    // 3. Find the first '{' and last '}' in the candidate
+    const s = candidate.indexOf('{');
+    const e = candidate.lastIndexOf('}');
+    if (s !== -1 && e > s) {
+      try { return JSON.parse(candidate.slice(s, e + 1)); } catch { /* fall through */ }
+    }
+
+    // 4. Last resort: same scan on the original raw string
+    const rs = text.indexOf('{');
+    const re = text.lastIndexOf('}');
+    if (rs !== -1 && re > rs) {
+      try { return JSON.parse(text.slice(rs, re + 1)); } catch { /* not JSON */ }
+    }
+
+    return null;
+  }
+
+  const parsed = extractJSON(raw);
+
+  if (parsed?.action === 'EDIT') {
+    const newContent = parsed.newContent?.trim() ?? '';
+    // Safety: never apply an empty file
+    if (!newContent) {
+      throw new Error('The AI returned an empty file — edit rejected for safety. Try rephrasing.');
+    }
+    // If content is identical, treat as explanation
+    if (newContent === activeFile.content.trim()) {
+      return { action: 'EXPLAIN', text: 'The AI sees no changes needed for this request.' };
+    }
+    return {
+      action:        'EDIT',
+      text:          parsed.commitMessage ?? 'AI suggested change',
+      newContent,
+      commitMessage: parsed.commitMessage ?? `AI: ${userInput.slice(0, 72)}`,
+    };
+  }
+
+  // Plain text → explanation or analysis
+  return { action: 'EXPLAIN', text: raw };
+}
+
+/**
+ * Write new file content to disk, stage it, and commit using the git engine.
+ * Uses gitEngine.stageFile + gitEngine.commit for transaction logging and
+ * cache invalidation.
+ *
+ * @returns Short commit SHA (7 chars)
+ */
+export async function applyFileEdit(
+  repoId:        string,
+  relativePath:  string,
+  newContent:    string,
+  commitMessage: string,
+  author:        { name: string; email: string },
+): Promise<string> {
+  await gitEngine.init();
+
+  // Safety: strip leading slashes and prevent directory traversal
+  const safe = relativePath.replace(/^\/+/, '').replace(/\.\.\//g, '');
+  if (!safe) throw new Error('Invalid file path — cannot apply edit.');
+
+  const dir     = gitEngine.resolveRepoDir(repoId);
+  const absPath = `${dir}/${safe}`;
+
+  // Verify the file still exists (could have been deleted since it was attached)
+  const stat = await expoFS.promises.stat(absPath).catch(() => null);
+  if (!stat) {
+    throw new Error(`"${safe}" no longer exists. It may have been deleted or moved.`);
+  }
+
+  // Write new content to disk
+  await expoFS.promises.writeFile(absPath, newContent, 'utf8');
+
+  // Stage then commit
+  await gitEngine.stageFile(repoId, safe);
+  await gitEngine.commit(repoId, commitMessage, author);
+
+  // Read back HEAD SHA for confirmation
+  try {
+    const log = await git.log({ fs: expoFS, dir, depth: 1 });
+    return log[0]?.oid.slice(0, 7) ?? 'committed';
+  } catch {
+    return 'committed';
+  }
+}
