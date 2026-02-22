@@ -710,7 +710,7 @@ export class GitEngine {
     let latestCommit: Awaited<ReturnType<typeof git.log>>[0] | undefined;
     let commitCount = 0;
     try {
-      const logs = await git.log({ fs, dir, depth: 50 });
+      const logs = await git.log({ fs, dir });
       latestCommit = logs[0];
       commitCount = logs.length;
     } catch {
@@ -865,21 +865,231 @@ export class GitEngine {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
     const commits = await git.log({ fs, dir, depth: 50 });
-    console.log(TAG, `getCommits(${repoId}) â†’ ${commits.length} commits`);
-    return commits.map((entry) => ({
-      sha: entry.oid,
-      shortSha: entry.oid.slice(0, 7),
-      message: entry.commit.message,
-      author: entry.commit.author.name,
-      email: entry.commit.author.email,
-      date: formatTimestamp(entry.commit.author.timestamp),
-      parents: entry.commit.parent ?? [],
-      branches: [],
-      isMerge: (entry.commit.parent ?? []).length > 1,
-      filesChanged: 0,
-      additions: 0,
-      deletions: 0,
-    }));
+    console.log(TAG, `getCommits(${repoId}) -> ${commits.length} commits`);
+
+    // Build branch -> oid map so we can tag commits with branch names
+    const branchMap = new Map<string, string[]>();
+    try {
+      const localBranches = await git.listBranches({ fs, dir });
+      for (const b of localBranches) {
+        try {
+          const oid = await git.resolveRef({ fs, dir, ref: b });
+          const existing = branchMap.get(oid) ?? [];
+          existing.push(b);
+          branchMap.set(oid, existing);
+        } catch { /* skip unresolvable branch */ }
+      }
+      // Also mark HEAD
+      try {
+        const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+        const existing = branchMap.get(headOid) ?? [];
+        if (!existing.includes('HEAD')) {
+          existing.push('HEAD');
+          branchMap.set(headOid, existing);
+        }
+      } catch { /* skip */ }
+    } catch { /* skip */ }
+
+    // Compute per-commit stats in parallel batches for performance
+    const BATCH_SIZE = 5;
+    const results: GitCommit[] = [];
+
+    for (let i = 0; i < commits.length; i += BATCH_SIZE) {
+      const batch = commits.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (entry) => {
+          const parents = entry.commit.parent ?? [];
+          let filesChanged = 0;
+          let additions = 0;
+          let deletions = 0;
+          let files: import('@/types/git').CommitFile[] = [];
+
+          try {
+            const stats = await this.getCommitStats(dir, entry.oid, parents[0] ?? null);
+            filesChanged = stats.filesChanged;
+            additions = stats.additions;
+            deletions = stats.deletions;
+            files = stats.files;
+          } catch (err) {
+            console.warn(TAG, `getCommits -> stats failed for ${entry.oid.slice(0, 7)}:`, err);
+          }
+
+          return {
+            sha: entry.oid,
+            shortSha: entry.oid.slice(0, 7),
+            message: entry.commit.message,
+            author: entry.commit.author.name,
+            email: entry.commit.author.email,
+            date: formatTimestamp(entry.commit.author.timestamp),
+            parents,
+            branches: branchMap.get(entry.oid) ?? [],
+            isMerge: parents.length > 1,
+            filesChanged,
+            additions,
+            deletions,
+            files,
+          };
+        }),
+      );
+      results.push(...batchResults);
+    }
+
+    return results;
+  }
+
+  /**
+   * Compute file-change stats for a single commit by walking its tree
+   * against its parent tree. Compares blob OIDs to find changed files,
+   * then does a line-level LCS diff for accurate additions/deletions.
+   *
+   * CRITICAL: The git.walk `map` callback MUST return `undefined` (bare
+   * `return`) for root (".") and tree/directory entries so isomorphic-git
+   * recurses into subdirectories. Returning `null` stops recursion.
+   */
+  private async getCommitStats(
+    dir: string,
+    commitOid: string,
+    parentOid: string | null,
+  ): Promise<{ filesChanged: number; additions: number; deletions: number; files: import('@/types/git').CommitFile[] }> {
+    let filesChanged = 0;
+    let additions = 0;
+    let deletions = 0;
+    const files: import('@/types/git').CommitFile[] = [];
+
+    const decodeBlob = async (entry: WalkerEntry | null): Promise<string> => {
+      if (!entry) return '';
+      try {
+        const bytes = await entry.content();
+        if (!bytes) return '';
+        return new TextDecoder().decode(bytes as Uint8Array);
+      } catch { return ''; }
+    };
+
+    const countLines = (text: string): number => {
+      if (!text) return 0;
+      return text.split('\n').length;
+    };
+
+    /**
+     * Compute added/deleted line counts between two file versions using
+     * a simple LCS (longest common subsequence) approach. Falls back to
+     * a fast heuristic for very large files to stay responsive on mobile.
+     */
+    const computeLineDiff = (oldText: string, newText: string): { add: number; del: number } => {
+      const oldLines = oldText ? oldText.split('\n') : [];
+      const newLines = newText ? newText.split('\n') : [];
+      const m = oldLines.length;
+      const n = newLines.length;
+
+      // Fast heuristic for large files (> 1000 combined lines)
+      if (m + n > 1000) {
+        const common = Math.min(m, n);
+        let same = 0;
+        for (let i = 0; i < common; i++) {
+          if (oldLines[i] === newLines[i]) same++;
+        }
+        return { add: Math.max(1, n - same), del: Math.max(1, m - same) };
+      }
+
+      // LCS via DP for accurate diff
+      const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+      for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+          dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+            ? dp[i - 1][j - 1] + 1
+            : Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+      }
+      const lcs = dp[m][n];
+      return { add: Math.max(0, n - lcs), del: Math.max(0, m - lcs) };
+    };
+
+    if (!parentOid) {
+      // Initial commit: every file is an addition
+      await git.walk({
+        fs,
+        dir,
+        trees: [git.TREE({ ref: commitOid })],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        map: async (filepath: string, entries: any[]) => {
+          const entry: WalkerEntry | null = entries[0];
+          // Return undefined for root & trees so walk recurses into children
+          if (filepath === '.') return;
+          const type = await entry?.type();
+          if (type !== 'blob') return;  // tree → recurse; missing → skip
+          filesChanged++;
+          const content = await decodeBlob(entry);
+          const lines = countLines(content);
+          additions += lines;
+          files.push({ path: filepath, changeType: 'A', additions: lines, deletions: 0 });
+          return filepath; // collect (value doesn't matter, just not null)
+        },
+      });
+    } else {
+      // Normal commit: compare parent tree vs current tree by blob OID
+      await git.walk({
+        fs,
+        dir,
+        trees: [git.TREE({ ref: parentOid }), git.TREE({ ref: commitOid })],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        map: async (filepath: string, entries: any[]) => {
+          const parentEntry: WalkerEntry | null = entries[0];
+          const currentEntry: WalkerEntry | null = entries[1];
+          // Return undefined for root so walk recurses into the whole tree
+          if (filepath === '.') return;
+
+          const [pType, cType] = await Promise.all([
+            parentEntry?.type(),
+            currentEntry?.type(),
+          ]);
+          // If either side is a directory, return undefined to recurse into it
+          if (pType === 'tree' || cType === 'tree') return;
+
+          const [pOid, cOid] = await Promise.all([
+            parentEntry?.oid(),
+            currentEntry?.oid(),
+          ]);
+          // Unchanged file: skip
+          if (pOid && cOid && pOid === cOid) return null;
+
+          filesChanged++;
+
+          // Read content for line-level diff
+          const [oldContent, newContent] = await Promise.all([
+            decodeBlob(parentEntry ?? null),
+            decodeBlob(currentEntry ?? null),
+          ]);
+
+          let fileAdd = 0;
+          let fileDel = 0;
+          let changeType: import('@/types/git').ChangeType = 'M';
+
+          if (!pOid) {
+            // Added file
+            changeType = 'A';
+            fileAdd = countLines(newContent);
+          } else if (!cOid) {
+            // Deleted file
+            changeType = 'D';
+            fileDel = countLines(oldContent);
+          } else {
+            // Modified: compute real line diff
+            changeType = 'M';
+            const diff = computeLineDiff(oldContent, newContent);
+            fileAdd = diff.add;
+            fileDel = diff.del;
+          }
+
+          additions += fileAdd;
+          deletions += fileDel;
+          files.push({ path: filepath, changeType, additions: fileAdd, deletions: fileDel });
+
+          return filepath;
+        },
+      });
+    }
+
+    return { filesChanged, additions, deletions, files };
   }
 
   // ── getCommitDiff ────────────────────────────────────────────────────────
