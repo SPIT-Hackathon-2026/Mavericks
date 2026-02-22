@@ -4,7 +4,7 @@ import { listUserRepos } from "@/services/github/api";
 import { profileCache } from "@/services/storage/profileCache";
 import { storage } from "@/services/storage/storage";
 import { pushQueue } from "@/services/sync/pushQueue";
-import { AppSettings, ConflictFile, ConflictHunk, GitHubRepo, MergeState } from "@/types/git";
+import { AppSettings, ConflictFile, ConflictHunk, GitCommit, GitHubRepo, MergeState } from "@/types/git";
 import createContextHook from "@nkzw/create-context-hook";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
@@ -114,9 +114,9 @@ export const [GitProvider, useGit] = createContextHook(() => {
 
   const commitsQuery = useQuery({
     queryKey: ["commits", selectedRepoId],
-    queryFn: async () => {
+    queryFn: async (): Promise<GitCommit[]> => {
       if (!selectedRepoId || !selectedRepo) return [];
-      const cached = await storage.readCache(selectedRepo.path, "commits");
+      const cached = await storage.readCache<GitCommit[]>(selectedRepo.path, "commits");
       if (cached) return cached;
       const commits = await gitEngine.getCommits(selectedRepoId);
       await storage.writeCache(selectedRepo.path, "commits", commits);
@@ -249,6 +249,35 @@ export const [GitProvider, useGit] = createContextHook(() => {
       showToast('info', `Reverted ${filepath}`);
     },
     [selectedRepoId, queryClient],
+  );
+
+  const revertToCommit = useCallback(
+    async (targetSha: string) => {
+      if (!selectedRepoId) return;
+      const author = {
+        name: settings.userConfig.name,
+        email: settings.userConfig.email,
+      };
+      try {
+        await gitEngine.revertToCommit(selectedRepoId, targetSha, author);
+        await queryClient.invalidateQueries({ queryKey: ['files', selectedRepoId] });
+        await queryClient.invalidateQueries({ queryKey: ['commits', selectedRepoId] });
+        await queryClient.invalidateQueries({ queryKey: ['repositories'] });
+        showToast('success', `Reverted to commit ${targetSha.slice(0, 7)}`);
+      } catch (err: any) {
+        console.error(TAG, 'revertToCommit failed', err);
+        showToast('error', `Revert failed: ${err?.message ?? 'Unknown error'}`);
+      }
+    },
+    [selectedRepoId, settings, queryClient],
+  );
+
+  const getReflog = useCallback(
+    async () => {
+      if (!selectedRepoId) return [];
+      return gitEngine.getReflog(selectedRepoId);
+    },
+    [selectedRepoId],
   );
 
   const commitChanges = useCallback(
@@ -711,6 +740,8 @@ export const [GitProvider, useGit] = createContextHook(() => {
     deleteFile,
     saveFile,
     revertFile,
+    revertToCommit,
+    getReflog,
     commitChanges,
     resolveConflictHunk,
     stageResolvedConflictFile,

@@ -37,7 +37,7 @@
 - [ ] Rename branch — not implemented
 - [x] Fetch history — `git.fetch()` in pull/push flows; branch metadata via `git.log()` per branch
 - [x] Visualize commit graph — SVG-based graph in `graph/index.tsx` with nodes (circles for normal, rotated squares for merges), edges, HEAD glow ring, tappable commit rows
-- [~] Commit graph stats — *branch tags always empty (`branches: []`), filesChanged/additions/deletions hardcoded to 0 in `getCommits()` — needs real data population*
+- [x] Commit graph stats — *branch map via `listBranches`/`resolveRef`, per-commit tree walk for filesChanged/additions/deletions*
 - [ ] Enable interactive rebase/commit rewrite (autosquash/fixup, reorder, drop/split) **[Stretch]**
 - [ ] Provide stash management (create, apply, pop, drop, list with previews) **[Stretch]**
 - [ ] Allow restore of deleted commits/branches via reflog-style history exploration *(Settings toggle exists but no reflog implementation)*
@@ -123,7 +123,7 @@
 
 ## Known Issues / Tech Debt
 - [ ] Terminal screen is a placeholder — no actual command execution (`terminal.tsx`)
-- [ ] Commit graph `getCommits()` returns hardcoded `branches: []`, `filesChanged: 0`, `additions: 0`, `deletions: 0` — needs real data
+- [x] ~~Commit graph `getCommits()` returns hardcoded zeros~~ — fixed: real branch tags + tree-walk stats
 - [ ] `enableReflog` setting toggle exists but no actual reflog implementation in engine
 - [ ] Chatbot is a stub — needs real AI backend or should be removed before demo
 - [ ] P2P transfer uses AsyncStorage relay (same-device) — needs real networking for multi-device demo

@@ -24,13 +24,16 @@ import {
   FileText,
   Folder,
   FolderPlus,
+  FolderTree,
   GitBranch,
   Link,
   MoreVertical,
   Plus,
   Send,
+  Shield,
   Square,
   Trash2,
+  X as XIcon,
 } from "lucide-react-native";
 import React, {
   useCallback,
@@ -41,6 +44,9 @@ import React, {
 } from "react";
 import {
   Alert,
+  Animated,
+  Dimensions,
+  Linking,
   Modal,
   Platform,
   ScrollView,
@@ -206,6 +212,83 @@ function flattenFiles(files: GitFile[]): GitFile[] {
   return result;
 }
 
+/** Recursive tree node renderer for the sidebar */
+function TreeNodeList({
+  nodes,
+  level,
+  onFilePress,
+}: {
+  nodes: GitFile[];
+  level: number;
+  onFilePress: (file: GitFile) => void;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const sorted = useMemo(
+    () =>
+      [...nodes].sort((a, b) => {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.localeCompare(b.name);
+      }),
+    [nodes],
+  );
+
+  const toggle = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <>
+      {sorted.map((node) => {
+        const isOpen = expanded.has(node.id);
+        const { Icon, color } = node.isDirectory
+          ? { Icon: Folder, color: Colors.accentWarning }
+          : getFileIconComponent(node.extension);
+
+        return (
+          <React.Fragment key={node.id}>
+            <TouchableOpacity
+              style={[styles.treeRow, { paddingLeft: 16 + level * 16 }]}
+              activeOpacity={0.6}
+              onPress={() => {
+                if (node.isDirectory) toggle(node.id);
+                else onFilePress(node);
+              }}
+            >
+              {node.isDirectory && (
+                <ChevronRight
+                  size={14}
+                  color={Colors.textMuted}
+                  style={isOpen ? { transform: [{ rotate: '90deg' }] } : undefined}
+                />
+              )}
+              <Icon size={16} color={color} />
+              <Text style={styles.treeNodeText} numberOfLines={1}>
+                {node.name}
+              </Text>
+              {node.status === 'modified' && (
+                <View style={[styles.statusIndicator, { backgroundColor: Colors.statusModified }]} />
+              )}
+              {node.status === 'untracked' && (
+                <View style={[styles.statusIndicator, { backgroundColor: Colors.statusUntracked }]} />
+              )}
+            </TouchableOpacity>
+            {node.isDirectory && isOpen && node.children && (
+              <TreeNodeList nodes={node.children} level={level + 1} onFilePress={onFilePress} />
+            )}
+          </React.Fragment>
+        );
+      })}
+    </>
+  );
+}
+
 export default function RepositoryDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -249,6 +332,8 @@ export default function RepositoryDetail() {
     null,
   );
   const [isFileOpInProgress, setIsFileOpInProgress] = useState(false);
+  const [showTreeSidebar, setShowTreeSidebar] = useState(false);
+  const treeSidebarAnim = useRef(new Animated.Value(-Dimensions.get('window').width * 0.8)).current;
 
   useEffect(() => {
     if (id && selectedRepo?.id !== id) {
@@ -387,6 +472,24 @@ export default function RepositoryDetail() {
     createFile,
     showToast,
   ]);
+
+  const openTreeSidebar = useCallback(() => {
+    setShowTreeSidebar(true);
+    Animated.spring(treeSidebarAnim, {
+      toValue: 0,
+      useNativeDriver: true,
+      tension: 60,
+      friction: 10,
+    }).start();
+  }, [treeSidebarAnim]);
+
+  const closeTreeSidebar = useCallback(() => {
+    Animated.timing(treeSidebarAnim, {
+      toValue: -Dimensions.get('window').width * 0.8,
+      duration: 250,
+      useNativeDriver: true,
+    }).start(() => setShowTreeSidebar(false));
+  }, [treeSidebarAnim]);
 
   const handleDeleteFile = useCallback(
     async (file: GitFile) => {
@@ -640,8 +743,8 @@ export default function RepositoryDetail() {
       </View>
 
       {tabIndex === 0 && (
+        <View style={styles.tabContent}>
         <ScrollView
-          style={styles.tabContent}
           showsVerticalScrollIndicator={false}
         >
           {/* File toolbar */}
@@ -665,6 +768,13 @@ export default function RepositoryDetail() {
             >
               <FolderPlus size={16} color={Colors.accentWarning} />
               <Text style={styles.fileToolbarBtnText}>New Folder</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.fileToolbarBtn}
+              onPress={openTreeSidebar}
+            >
+              <FolderTree size={16} color={Colors.accentPurple} />
+              <Text style={styles.fileToolbarBtnText}>Tree</Text>
             </TouchableOpacity>
           </View>
 
@@ -716,6 +826,62 @@ export default function RepositoryDetail() {
           ))}
           <View style={{ height: 100 }} />
         </ScrollView>
+
+        {/* Security Scan FAB */}
+        <TouchableOpacity
+          style={styles.securityFab}
+          activeOpacity={0.8}
+          onPress={() => Linking.openURL('https://spectra-guard.vercel.app/dashboard')}
+        >
+          <Shield size={22} color="#fff" />
+          <Text style={styles.securityFabText}>Scan</Text>
+        </TouchableOpacity>
+
+        {/* Tree Sidebar */}
+        {showTreeSidebar && (
+          <View style={StyleSheet.absoluteFill}>
+            <TouchableOpacity
+              style={styles.treeSidebarOverlay}
+              activeOpacity={1}
+              onPress={closeTreeSidebar}
+            />
+            <Animated.View
+              style={[
+                styles.treeSidebarContainer,
+                { transform: [{ translateX: treeSidebarAnim }] },
+              ]}
+            >
+              <View style={styles.treeSidebarHeader}>
+                <FolderTree size={18} color={Colors.accentPurple} />
+                <Text style={styles.treeSidebarTitle}>Directory Tree</Text>
+                <TouchableOpacity onPress={closeTreeSidebar} style={styles.treeSidebarCloseBtn}>
+                  <XIcon size={20} color={Colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.treeSidebarScroll} showsVerticalScrollIndicator={false}>
+                <TreeNodeList nodes={files} level={0} onFilePress={(file) => {
+                  closeTreeSidebar();
+                  if (file.isDirectory) {
+                    const pathSegments = file.path.replace(/^\//, '').split('/');
+                    setCurrentPath(pathSegments);
+                  } else {
+                    router.push({
+                      pathname: '/file-viewer',
+                      params: {
+                        name: file.name,
+                        content: file.content ?? '',
+                        ext: file.extension ?? '',
+                        filePath: file.path,
+                      },
+                    });
+                  }
+                }} />
+                <View style={{ height: 40 }} />
+              </ScrollView>
+            </Animated.View>
+          </View>
+        )}
+        </View>
       )}
 
       {/* Create File / Folder Modal */}
@@ -2268,5 +2434,93 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     paddingHorizontal: 16,
     paddingVertical: 8,
+  },
+
+  // ── Security Scan FAB ───────────────────────────────────────────────────
+  securityFab: {
+    position: "absolute" as const,
+    bottom: 24,
+    right: 20,
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 8,
+    backgroundColor: "#7C3AED",
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 28,
+    elevation: 6,
+    shadowColor: "#7C3AED",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+  },
+  securityFabText: {
+    fontSize: 14,
+    fontWeight: "700" as const,
+    color: "#fff",
+    letterSpacing: 0.3,
+  },
+
+  // ── Tree Sidebar ────────────────────────────────────────────────────────
+  treeSidebarOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  treeSidebarContainer: {
+    position: "absolute" as const,
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: "80%" as unknown as number,
+    backgroundColor: Colors.bgSecondary,
+    borderRightWidth: 1,
+    borderRightColor: Colors.borderDefault,
+    elevation: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 4, height: 0 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+  },
+  treeSidebarHeader: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 10,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderDefault,
+    backgroundColor: Colors.bgTertiary,
+  },
+  treeSidebarTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "700" as const,
+    color: Colors.textPrimary,
+  },
+  treeSidebarCloseBtn: {
+    width: 36,
+    height: 36,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+    borderRadius: 18,
+    backgroundColor: Colors.bgElevated,
+  },
+  treeSidebarScroll: {
+    flex: 1,
+  },
+  treeRow: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 8,
+    paddingVertical: 10,
+    paddingRight: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.borderMuted,
+  },
+  treeNodeText: {
+    flex: 1,
+    fontSize: 13,
+    color: Colors.textPrimary,
+    fontWeight: "400" as const,
   },
 });

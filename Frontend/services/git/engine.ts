@@ -178,6 +178,54 @@ async function removeDir(dir: string) {
   await fs.promises.rmdir(dir);
 }
 
+// ---------------------------------------------------------------------------
+// Reflog helpers  (stored in .git/gitlane_reflog.json)
+// ---------------------------------------------------------------------------
+
+export interface ReflogEntry {
+  id: string;
+  ref: string;           // e.g. "HEAD", "refs/heads/main"
+  oldOid: string;        // previous sha (0000000 for initial)
+  newOid: string;        // new sha
+  action: "commit" | "checkout" | "merge" | "branch" | "revert" | "reset";
+  message: string;
+  author: string;
+  timestamp: number;     // Date.now()
+}
+
+function reflogFilePath(dir: string) {
+  return joinPath(dir, ".git", "gitlane_reflog.json");
+}
+
+async function readReflog(dir: string): Promise<ReflogEntry[]> {
+  try {
+    const raw = await fs.promises.readFile(reflogFilePath(dir), "utf8");
+    return JSON.parse(raw as string) as ReflogEntry[];
+  } catch {
+    return [];
+  }
+}
+
+async function writeReflog(dir: string, entries: ReflogEntry[]) {
+  await fs.promises.writeFile(reflogFilePath(dir), JSON.stringify(entries), "utf8");
+}
+
+async function appendReflogEntry(
+  dir: string,
+  entry: Omit<ReflogEntry, "id" | "timestamp">,
+) {
+  const entries = await readReflog(dir);
+  entries.unshift({
+    ...entry,
+    id: randomId(),
+    timestamp: Date.now(),
+  });
+  // Keep last 500 entries
+  if (entries.length > 500) entries.length = 500;
+  await writeReflog(dir, entries);
+}
+
+
 export class GitEngine {
   private ready: Promise<void> | null = null;
 
@@ -710,7 +758,7 @@ export class GitEngine {
     let latestCommit: Awaited<ReturnType<typeof git.log>>[0] | undefined;
     let commitCount = 0;
     try {
-      const logs = await git.log({ fs, dir, depth: 50 });
+      const logs = await git.log({ fs, dir });
       latestCommit = logs[0];
       commitCount = logs.length;
     } catch {
@@ -865,21 +913,231 @@ export class GitEngine {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
     const commits = await git.log({ fs, dir, depth: 50 });
-    console.log(TAG, `getCommits(${repoId}) â†’ ${commits.length} commits`);
-    return commits.map((entry) => ({
-      sha: entry.oid,
-      shortSha: entry.oid.slice(0, 7),
-      message: entry.commit.message,
-      author: entry.commit.author.name,
-      email: entry.commit.author.email,
-      date: formatTimestamp(entry.commit.author.timestamp),
-      parents: entry.commit.parent ?? [],
-      branches: [],
-      isMerge: (entry.commit.parent ?? []).length > 1,
-      filesChanged: 0,
-      additions: 0,
-      deletions: 0,
-    }));
+    console.log(TAG, `getCommits(${repoId}) -> ${commits.length} commits`);
+
+    // Build branch -> oid map so we can tag commits with branch names
+    const branchMap = new Map<string, string[]>();
+    try {
+      const localBranches = await git.listBranches({ fs, dir });
+      for (const b of localBranches) {
+        try {
+          const oid = await git.resolveRef({ fs, dir, ref: b });
+          const existing = branchMap.get(oid) ?? [];
+          existing.push(b);
+          branchMap.set(oid, existing);
+        } catch { /* skip unresolvable branch */ }
+      }
+      // Also mark HEAD
+      try {
+        const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+        const existing = branchMap.get(headOid) ?? [];
+        if (!existing.includes('HEAD')) {
+          existing.push('HEAD');
+          branchMap.set(headOid, existing);
+        }
+      } catch { /* skip */ }
+    } catch { /* skip */ }
+
+    // Compute per-commit stats in parallel batches for performance
+    const BATCH_SIZE = 5;
+    const results: GitCommit[] = [];
+
+    for (let i = 0; i < commits.length; i += BATCH_SIZE) {
+      const batch = commits.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (entry) => {
+          const parents = entry.commit.parent ?? [];
+          let filesChanged = 0;
+          let additions = 0;
+          let deletions = 0;
+          let files: import('@/types/git').CommitFile[] = [];
+
+          try {
+            const stats = await this.getCommitStats(dir, entry.oid, parents[0] ?? null);
+            filesChanged = stats.filesChanged;
+            additions = stats.additions;
+            deletions = stats.deletions;
+            files = stats.files;
+          } catch (err) {
+            console.warn(TAG, `getCommits -> stats failed for ${entry.oid.slice(0, 7)}:`, err);
+          }
+
+          return {
+            sha: entry.oid,
+            shortSha: entry.oid.slice(0, 7),
+            message: entry.commit.message,
+            author: entry.commit.author.name,
+            email: entry.commit.author.email,
+            date: formatTimestamp(entry.commit.author.timestamp),
+            parents,
+            branches: branchMap.get(entry.oid) ?? [],
+            isMerge: parents.length > 1,
+            filesChanged,
+            additions,
+            deletions,
+            files,
+          };
+        }),
+      );
+      results.push(...batchResults);
+    }
+
+    return results;
+  }
+
+  /**
+   * Compute file-change stats for a single commit by walking its tree
+   * against its parent tree. Compares blob OIDs to find changed files,
+   * then does a line-level LCS diff for accurate additions/deletions.
+   *
+   * CRITICAL: The git.walk `map` callback MUST return `undefined` (bare
+   * `return`) for root (".") and tree/directory entries so isomorphic-git
+   * recurses into subdirectories. Returning `null` stops recursion.
+   */
+  private async getCommitStats(
+    dir: string,
+    commitOid: string,
+    parentOid: string | null,
+  ): Promise<{ filesChanged: number; additions: number; deletions: number; files: import('@/types/git').CommitFile[] }> {
+    let filesChanged = 0;
+    let additions = 0;
+    let deletions = 0;
+    const files: import('@/types/git').CommitFile[] = [];
+
+    const decodeBlob = async (entry: WalkerEntry | null): Promise<string> => {
+      if (!entry) return '';
+      try {
+        const bytes = await entry.content();
+        if (!bytes) return '';
+        return new TextDecoder().decode(bytes as Uint8Array);
+      } catch { return ''; }
+    };
+
+    const countLines = (text: string): number => {
+      if (!text) return 0;
+      return text.split('\n').length;
+    };
+
+    /**
+     * Compute added/deleted line counts between two file versions using
+     * a simple LCS (longest common subsequence) approach. Falls back to
+     * a fast heuristic for very large files to stay responsive on mobile.
+     */
+    const computeLineDiff = (oldText: string, newText: string): { add: number; del: number } => {
+      const oldLines = oldText ? oldText.split('\n') : [];
+      const newLines = newText ? newText.split('\n') : [];
+      const m = oldLines.length;
+      const n = newLines.length;
+
+      // Fast heuristic for large files (> 1000 combined lines)
+      if (m + n > 1000) {
+        const common = Math.min(m, n);
+        let same = 0;
+        for (let i = 0; i < common; i++) {
+          if (oldLines[i] === newLines[i]) same++;
+        }
+        return { add: Math.max(1, n - same), del: Math.max(1, m - same) };
+      }
+
+      // LCS via DP for accurate diff
+      const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+      for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+          dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+            ? dp[i - 1][j - 1] + 1
+            : Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+      }
+      const lcs = dp[m][n];
+      return { add: Math.max(0, n - lcs), del: Math.max(0, m - lcs) };
+    };
+
+    if (!parentOid) {
+      // Initial commit: every file is an addition
+      await git.walk({
+        fs,
+        dir,
+        trees: [git.TREE({ ref: commitOid })],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        map: async (filepath: string, entries: any[]) => {
+          const entry: WalkerEntry | null = entries[0];
+          // Return undefined for root & trees so walk recurses into children
+          if (filepath === '.') return;
+          const type = await entry?.type();
+          if (type !== 'blob') return;  // tree → recurse; missing → skip
+          filesChanged++;
+          const content = await decodeBlob(entry);
+          const lines = countLines(content);
+          additions += lines;
+          files.push({ path: filepath, changeType: 'A', additions: lines, deletions: 0 });
+          return filepath; // collect (value doesn't matter, just not null)
+        },
+      });
+    } else {
+      // Normal commit: compare parent tree vs current tree by blob OID
+      await git.walk({
+        fs,
+        dir,
+        trees: [git.TREE({ ref: parentOid }), git.TREE({ ref: commitOid })],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        map: async (filepath: string, entries: any[]) => {
+          const parentEntry: WalkerEntry | null = entries[0];
+          const currentEntry: WalkerEntry | null = entries[1];
+          // Return undefined for root so walk recurses into the whole tree
+          if (filepath === '.') return;
+
+          const [pType, cType] = await Promise.all([
+            parentEntry?.type(),
+            currentEntry?.type(),
+          ]);
+          // If either side is a directory, return undefined to recurse into it
+          if (pType === 'tree' || cType === 'tree') return;
+
+          const [pOid, cOid] = await Promise.all([
+            parentEntry?.oid(),
+            currentEntry?.oid(),
+          ]);
+          // Unchanged file: skip
+          if (pOid && cOid && pOid === cOid) return null;
+
+          filesChanged++;
+
+          // Read content for line-level diff
+          const [oldContent, newContent] = await Promise.all([
+            decodeBlob(parentEntry ?? null),
+            decodeBlob(currentEntry ?? null),
+          ]);
+
+          let fileAdd = 0;
+          let fileDel = 0;
+          let changeType: import('@/types/git').ChangeType = 'M';
+
+          if (!pOid) {
+            // Added file
+            changeType = 'A';
+            fileAdd = countLines(newContent);
+          } else if (!cOid) {
+            // Deleted file
+            changeType = 'D';
+            fileDel = countLines(oldContent);
+          } else {
+            // Modified: compute real line diff
+            changeType = 'M';
+            const diff = computeLineDiff(oldContent, newContent);
+            fileAdd = diff.add;
+            fileDel = diff.del;
+          }
+
+          additions += fileAdd;
+          deletions += fileDel;
+          files.push({ path: filepath, changeType, additions: fileAdd, deletions: fileDel });
+
+          return filepath;
+        },
+      });
+    }
+
+    return { filesChanged, additions, deletions, files };
   }
 
   // ── getCommitDiff ────────────────────────────────────────────────────────
@@ -1134,7 +1392,137 @@ export class GitEngine {
       console.log(TAG, `revertFile(${repoId}) → ${filepath} removed (not in HEAD)`);
     }
   }
-  // â”€â”€ Commit (TX-wrapped + 3 s test delay) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  // ── Reflog ─────────────────────────────────────────────────────────────
+
+  /**
+   * Get the reflog for a repository.
+   * Returns entries in reverse chronological order (newest first).
+   */
+  async getReflog(repoId: string): Promise<ReflogEntry[]> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    return readReflog(dir);
+  }
+
+  // ── Revert to Commit ──────────────────────────────────────────────────
+
+  /**
+   * Revert the repository working tree to the state of a specific commit.
+   * This creates a NEW commit whose tree matches the target commit exactly,
+   * preserving full history (no destructive reset).
+   */
+  async revertToCommit(
+    repoId: string,
+    targetSha: string,
+    author: { name: string; email: string },
+  ): Promise<string> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+
+    let oldOid = '0000000';
+    try { oldOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
+
+    // 1. Read the tree of the target commit
+    const { commit: targetCommit } = await git.readCommit({ fs, dir, oid: targetSha });
+    const targetTree = targetCommit.tree;
+
+    // 2. Remove all tracked files from the working directory
+    const allFiles = await this.listAllFiles(dir, '');
+    for (const filepath of allFiles) {
+      const fullPath = joinPath(dir, filepath);
+      try {
+        await fs.promises.unlink(fullPath);
+      } catch { /* ignore */ }
+    }
+
+    // 3. Checkout the target tree into the working directory
+    //    We use git.readTree + manually write files from the target commit
+    await this.writeTreeToWorkdir(dir, targetTree, '');
+
+    // 4. Stage all changes
+    const currentFiles = await this.listAllFiles(dir, '');
+    for (const filepath of currentFiles) {
+      await git.add({ fs, dir, filepath });
+    }
+
+    // Also stage deletions for any files that were in HEAD but not in the target
+    try {
+      const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+      const { commit: headCommit } = await git.readCommit({ fs, dir, oid: headOid });
+      const headFiles = await this.collectTreePaths(dir, headCommit.tree, '');
+      const targetFiles = new Set(currentFiles);
+      for (const hf of headFiles) {
+        if (!targetFiles.has(hf)) {
+          try { await git.remove({ fs, dir, filepath: hf }); } catch {}
+        }
+      }
+    } catch { /* first commit scenario */ }
+
+    // 5. Create a revert commit
+    const shortSha = targetSha.slice(0, 7);
+    const message = `Revert to ${shortSha}: restored working tree to commit ${targetSha}`;
+    const newOid = await git.commit({ fs, dir, message, author, committer: author });
+
+    // 6. Record reflog entry
+    await appendReflogEntry(dir, {
+      ref: 'HEAD',
+      oldOid,
+      newOid,
+      action: 'revert',
+      message: `revert: reverting to ${shortSha}`,
+      author: author.name,
+    });
+
+    await deleteGitCache(dir);
+    console.log(TAG, `revertToCommit(${repoId}) -> reverted to ${shortSha}, new commit ${newOid}`);
+    return newOid;
+  }
+
+  /**
+   * Recursively write a git tree object to the working directory.
+   */
+  private async writeTreeToWorkdir(dir: string, treeOid: string, prefix: string): Promise<void> {
+    const { tree } = await git.readTree({ fs, dir, oid: treeOid });
+    for (const entry of tree) {
+      const entryPath = prefix ? `${prefix}/${entry.path}` : entry.path;
+      const fullPath = joinPath(dir, entryPath);
+
+      if (entry.mode === '040000' || entry.type === 'tree') {
+        // Directory — recurse
+        await ensureDir(fullPath);
+        await this.writeTreeToWorkdir(dir, entry.oid, entryPath);
+      } else {
+        // File — read blob and write
+        const { blob } = await git.readBlob({ fs, dir, oid: entry.oid });
+        const content = new TextDecoder().decode(blob);
+        // Ensure parent directory exists
+        const parentDir = fullPath.substring(0, fullPath.lastIndexOf('/'));
+        if (parentDir) await ensureDir(parentDir);
+        await fs.promises.writeFile(fullPath, content, 'utf8');
+      }
+    }
+  }
+
+  /**
+   * Collect all file paths from a tree object recursively.
+   */
+  private async collectTreePaths(dir: string, treeOid: string, prefix: string): Promise<string[]> {
+    const paths: string[] = [];
+    const { tree } = await git.readTree({ fs, dir, oid: treeOid });
+    for (const entry of tree) {
+      const entryPath = prefix ? `${prefix}/${entry.path}` : entry.path;
+      if (entry.mode === '040000' || entry.type === 'tree') {
+        const subPaths = await this.collectTreePaths(dir, entry.oid, entryPath);
+        paths.push(...subPaths);
+      } else {
+        paths.push(entryPath);
+      }
+    }
+    return paths;
+  }
+
+  // ── Commit (TX-wrapped) ────────────────────────────────────────────
 
   async commit(
     repoId: string,
@@ -1155,16 +1543,24 @@ export class GitEngine {
     console.log(TAG, `commit PENDING (txId=${txId}) in ${repoId}`);
 
     try {
-      await git.commit({ fs, dir, message, author, committer: author });
+      // Capture HEAD before commit for reflog
+      let oldOid = '0000000';
+      try { oldOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
 
-      // â±  3-second intentional delay â€” kill app in this window to test recovery
-      console.log(
-        TAG,
-        `commit succeeded â€“ 3 s delay before COMPLETED (test crash-recovery)â€¦`,
-      );
+      const newCommitOid = await git.commit({ fs, dir, message, author, committer: author });
+
+      // Record reflog entry
+      await appendReflogEntry(dir, {
+        ref: 'HEAD',
+        oldOid,
+        newOid: newCommitOid,
+        action: 'commit',
+        message: `commit: ${message}`,
+        author: author.name,
+      });
+
+      // 2. COMPLETED + invalidate cache (after short delay for crash-recovery testing)
       await new Promise((resolve) => setTimeout(resolve, 3000));
-
-      // 2. COMPLETED + invalidate cache
       await completeTx(dir, txId);
       await deleteGitCache(dir);
       console.log(TAG, `commit COMPLETED (txId=${txId}) in ${repoId}`);
@@ -1180,7 +1576,24 @@ export class GitEngine {
   async switchBranch(repoId: string, branch: string) {
     const dir = this.resolveRepoDir(repoId);
     console.log(TAG, `switchBranch(${repoId}, ${branch})`);
+
+    let oldOid = '0000000';
+    try { oldOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
+    const oldBranch = await git.currentBranch({ fs, dir, fullname: false }) ?? 'HEAD';
+
     await git.checkout({ fs, dir, ref: branch });
+
+    let newOid = '0000000';
+    try { newOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
+    await appendReflogEntry(dir, {
+      ref: 'HEAD',
+      oldOid,
+      newOid,
+      action: 'checkout',
+      message: `checkout: moving from ${oldBranch} to ${branch}`,
+      author: 'user',
+    });
+    await deleteGitCache(dir);
     console.log(TAG, `switchBranch â†’ now on ${branch}`);
   }
 
@@ -1198,7 +1611,22 @@ export class GitEngine {
     console.log(TAG, `createBranch PENDING (txId=${txId}) â†’ ${branch}`);
 
     try {
+      let oldOid = '0000000';
+      try { oldOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
+
       await git.branch({ fs, dir, ref: branch, checkout: true });
+
+      let newOid = '0000000';
+      try { newOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
+      await appendReflogEntry(dir, {
+        ref: 'HEAD',
+        oldOid,
+        newOid,
+        action: 'branch',
+        message: `branch: Created ${branch} from HEAD`,
+        author: 'user',
+      });
+
       await completeTx(dir, txId);
       await deleteGitCache(dir);
       console.log(TAG, `createBranch COMPLETED â†’ ${branch}`);
@@ -1237,6 +1665,9 @@ export class GitEngine {
     console.log(TAG, `merge PENDING (txId=${txId}) — merging ${theirBranch} into ${current}`);
 
     try {
+      let oldOid = '0000000';
+      try { oldOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
+
       const result = await git.merge({
         fs,
         dir,
@@ -1249,6 +1680,18 @@ export class GitEngine {
       // Fast-forward or auto-merge succeeded
       if (result.oid && !result.alreadyMerged) {
         await git.checkout({ fs, dir, ref: current });
+
+        let newOid = '0000000';
+        try { newOid = await git.resolveRef({ fs, dir, ref: 'HEAD' }); } catch {}
+        await appendReflogEntry(dir, {
+          ref: 'HEAD',
+          oldOid,
+          newOid,
+          action: 'merge',
+          message: `merge ${theirBranch}: Fast-forward`,
+          author: author.name,
+        });
+
         await completeTx(dir, txId);
         await deleteGitCache(dir);
         console.log(TAG, `merge COMPLETED cleanly (txId=${txId})`);
