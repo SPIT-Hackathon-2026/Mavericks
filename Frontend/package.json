@@ -3,10 +3,10 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
-    "start": "bunx rork start -p 1ukb2kg5ytx9089p30ffh --tunnel",
-    "start-web": "bunx rork start -p 1ukb2kg5ytx9089p30ffh --web --tunnel",
-    "start-web-dev": "DEBUG=expo* bunx rork start -p 1ukb2kg5ytx9089p30ffh --web --tunnel",
-    "test": "jest --verbose",
+    "start": "npx expo start",
+    "start-tunnel": "npx expo start --tunnel",
+    "start-web": "npx expo start --web",
+    "start-web-dev": "DEBUG=expo* npx expo start --web",
     "lint": "expo lint",
     "android": "expo run:android",
     "ios": "expo run:ios"

@@ -158,16 +158,26 @@ function DiffFileCard({ file, defaultExpanded = true }: { file: DiffFile; defaul
       {/* Hunks */}
       {expanded && (
         <View style={styles.hunksContainer}>
-          {file.hunks.map((hunk, hi) => (
-            <View key={hi} style={styles.hunkBlock}>
-              <View style={styles.hunkHeaderRow}>
-                <Text style={styles.hunkHeaderText}>{hunk.header}</Text>
-              </View>
-              {hunk.lines.map((line, li) => (
-                <DiffLineRow key={li} line={line} />
-              ))}
+          {file.hunks.length === 0 ? (
+            <View style={styles.noHunksRow}>
+              <Text style={styles.noHunksText}>
+                {file.additions + file.deletions > 0
+                  ? `+${file.additions} / -${file.deletions} lines · diff not included (QR size limit)`
+                  : 'No line changes'}
+              </Text>
             </View>
-          ))}
+          ) : (
+            file.hunks.map((hunk, hi) => (
+              <View key={hi} style={styles.hunkBlock}>
+                <View style={styles.hunkHeaderRow}>
+                  <Text style={styles.hunkHeaderText}>{hunk.header}</Text>
+                </View>
+                {hunk.lines.map((line, li) => (
+                  <DiffLineRow key={li} line={line} />
+                ))}
+              </View>
+            ))
+          )}
         </View>
       )}
     </View>
@@ -383,6 +393,15 @@ const styles = StyleSheet.create({
     borderTopColor: Colors.borderDefault,
   },
   hunkBlock: {},
+  noHunksRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  noHunksText: {
+    fontSize: 11,
+    color: Colors.textMuted,
+    fontStyle: 'italic' as const,
+  },
   hunkHeaderRow: {
     backgroundColor: 'rgba(59,130,246,0.08)',
     paddingHorizontal: 12,

@@ -934,7 +934,7 @@ export class GitEngine {
 
     // Normal commit — compare parent tree vs current tree
     type RawEntry = CommitDiffFile | null;
-    const walked = (await git.walk({
+    const walked = ((await git.walk({
       fs,
       dir,
       trees: [git.TREE({ ref: parentSha }), git.TREE({ ref: sha })],
@@ -971,7 +971,7 @@ export class GitEngine {
 
         return { filepath, oldContent, newContent, changeType };
       },
-    })) as RawEntry[];
+    })) ?? []) as RawEntry[];
 
     return walked.filter((r): r is CommitDiffFile => r !== null);
   }

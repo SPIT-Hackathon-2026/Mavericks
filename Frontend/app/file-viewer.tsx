@@ -34,6 +34,7 @@ import {
   Circle,
   Save,
   RotateCcw,
+  MessageCircle,
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
@@ -570,6 +571,26 @@ export default function FileViewer() {
           ) : (
             <Copy size={17} color={Colors.textSecondary} />
           )}
+        </TouchableOpacity>
+
+        {/* Open in AI Chat */}
+        <TouchableOpacity
+          style={styles.iconBtn}
+          onPress={() => {
+            if (!selectedRepo) return;
+            const rel = filePath.replace(/^\//, '');
+            router.push({
+              pathname: '/chatbot',
+              params: {
+                repoId:   selectedRepo.id,
+                filePath: rel,
+                fileName: fileName,
+              },
+            } as any);
+          }}
+          activeOpacity={0.7}
+        >
+          <MessageCircle size={17} color={Colors.accentPrimary} />
         </TouchableOpacity>
 
         {/* View / Edit toggle pill */}
