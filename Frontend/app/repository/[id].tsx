@@ -12,43 +12,43 @@ import type { GitCommit as GitCommitType, GitFile } from "@/types/git";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
-    ArrowLeft,
-    CheckSquare,
-    ChevronDown,
-    ChevronRight,
-    Download,
-    File,
-    FileCode2,
-    FileJson,
-    FilePlus2,
-    FileText,
-    Folder,
-    FolderPlus,
-    GitBranch,
-    Link,
-    MoreVertical,
-    Plus,
-    Send,
-    Square,
-    Trash2,
+  ArrowLeft,
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  File,
+  FileCode2,
+  FileJson,
+  FilePlus2,
+  FileText,
+  Folder,
+  FolderPlus,
+  GitBranch,
+  Link,
+  MoreVertical,
+  Plus,
+  Send,
+  Square,
+  Trash2,
 } from "lucide-react-native";
 import React, {
-    useCallback,
-    useEffect,
-    useMemo,
-    useRef,
-    useState
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
 } from "react";
 import {
-    Alert,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  Alert,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -65,7 +65,15 @@ function getFileIconComponent(ext?: string) {
   return fileIconMap[ext ?? ""] ?? { Icon: File, color: "#A3A3A3" };
 }
 
-function FileRow({ file, onPress, onLongPress }: { file: GitFile; onPress: () => void; onLongPress?: () => void }) {
+function FileRow({
+  file,
+  onPress,
+  onLongPress,
+}: {
+  file: GitFile;
+  onPress: () => void;
+  onLongPress?: () => void;
+}) {
   const { Icon, color } = file.isDirectory
     ? { Icon: Folder, color: Colors.accentWarning }
     : getFileIconComponent(file.extension);
@@ -234,10 +242,12 @@ export default function RepositoryDetail() {
   const [showPushBranchPicker, setShowPushBranchPicker] = useState(false);
   const [showPullBranchPicker, setShowPullBranchPicker] = useState(false);
   const [showNewFileModal, setShowNewFileModal] = useState(false);
-  const [newFileName, setNewFileName] = useState('');
-  const [newFileContent, setNewFileContent] = useState('');
+  const [newFileName, setNewFileName] = useState("");
+  const [newFileContent, setNewFileContent] = useState("");
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState<GitFile | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<GitFile | null>(
+    null,
+  );
   const [isFileOpInProgress, setIsFileOpInProgress] = useState(false);
 
   useEffect(() => {
@@ -350,40 +360,52 @@ export default function RepositoryDetail() {
   const handleCreateFile = useCallback(async () => {
     if (!newFileName.trim() || isFileOpInProgress) return;
     setIsFileOpInProgress(true);
-    const basePath = currentPath.length > 0 ? currentPath.join('/') + '/' : '';
+    const basePath = currentPath.length > 0 ? currentPath.join("/") + "/" : "";
     const fullPath = basePath + newFileName.trim();
     try {
       if (isCreatingFolder) {
-        await createFile(fullPath + '/.gitkeep', '');
+        await createFile(fullPath + "/.gitkeep", "");
       } else {
         await createFile(fullPath, newFileContent);
       }
-      setNewFileName('');
-      setNewFileContent('');
+      setNewFileName("");
+      setNewFileContent("");
       setShowNewFileModal(false);
       setIsCreatingFolder(false);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to create file';
-      showToast('error', msg);
+      const msg = err instanceof Error ? err.message : "Failed to create file";
+      showToast("error", msg);
     } finally {
       setIsFileOpInProgress(false);
     }
-  }, [newFileName, newFileContent, currentPath, isCreatingFolder, isFileOpInProgress, createFile, showToast]);
+  }, [
+    newFileName,
+    newFileContent,
+    currentPath,
+    isCreatingFolder,
+    isFileOpInProgress,
+    createFile,
+    showToast,
+  ]);
 
-  const handleDeleteFile = useCallback(async (file: GitFile) => {
-    if (isFileOpInProgress) return;
-    setIsFileOpInProgress(true);
-    const filePath = file.path.replace(/^\//, '');
-    try {
-      await deleteFile(filePath);
-      setShowDeleteConfirm(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to delete file';
-      showToast('error', msg);
-    } finally {
-      setIsFileOpInProgress(false);
-    }
-  }, [deleteFile, showToast, isFileOpInProgress]);
+  const handleDeleteFile = useCallback(
+    async (file: GitFile) => {
+      if (isFileOpInProgress) return;
+      setIsFileOpInProgress(true);
+      const filePath = file.path.replace(/^\//, "");
+      try {
+        await deleteFile(filePath);
+        setShowDeleteConfirm(null);
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "Failed to delete file";
+        showToast("error", msg);
+      } finally {
+        setIsFileOpInProgress(false);
+      }
+    },
+    [deleteFile, showToast, isFileOpInProgress],
+  );
 
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
@@ -626,14 +648,20 @@ export default function RepositoryDetail() {
           <View style={styles.fileToolbar}>
             <TouchableOpacity
               style={styles.fileToolbarBtn}
-              onPress={() => { setIsCreatingFolder(false); setShowNewFileModal(true); }}
+              onPress={() => {
+                setIsCreatingFolder(false);
+                setShowNewFileModal(true);
+              }}
             >
               <FilePlus2 size={16} color={Colors.accentPrimary} />
               <Text style={styles.fileToolbarBtnText}>New File</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.fileToolbarBtn}
-              onPress={() => { setIsCreatingFolder(true); setShowNewFileModal(true); }}
+              onPress={() => {
+                setIsCreatingFolder(true);
+                setShowNewFileModal(true);
+              }}
             >
               <FolderPlus size={16} color={Colors.accentWarning} />
               <Text style={styles.fileToolbarBtnText}>New Folder</Text>
@@ -700,14 +728,16 @@ export default function RepositoryDetail() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>
-              {isCreatingFolder ? 'New Folder' : 'New File'}
+              {isCreatingFolder ? "New Folder" : "New File"}
             </Text>
             <Text style={styles.modalSubtitle}>
-              {currentPath.length > 0 ? `In: /${currentPath.join('/')}/` : 'In: / (root)'}
+              {currentPath.length > 0
+                ? `In: /${currentPath.join("/")}/`
+                : "In: / (root)"}
             </Text>
             <TextInput
               style={styles.modalInput}
-              placeholder={isCreatingFolder ? 'folder-name' : 'filename.tsx'}
+              placeholder={isCreatingFolder ? "folder-name" : "filename.tsx"}
               placeholderTextColor={Colors.textMuted}
               value={newFileName}
               onChangeText={setNewFileName}
@@ -717,7 +747,10 @@ export default function RepositoryDetail() {
             />
             {!isCreatingFolder && (
               <TextInput
-                style={[styles.modalInput, { minHeight: 80, textAlignVertical: 'top' }]}
+                style={[
+                  styles.modalInput,
+                  { minHeight: 80, textAlignVertical: "top" },
+                ]}
                 placeholder="File content (optional)"
                 placeholderTextColor={Colors.textMuted}
                 value={newFileContent}
@@ -731,15 +764,20 @@ export default function RepositoryDetail() {
                 style={styles.modalCancelBtn}
                 onPress={() => {
                   setShowNewFileModal(false);
-                  setNewFileName('');
-                  setNewFileContent('');
+                  setNewFileName("");
+                  setNewFileContent("");
                   setIsCreatingFolder(false);
                 }}
               >
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalSaveBtn, (!newFileName.trim() || isFileOpInProgress) && { opacity: 0.4 }]}
+                style={[
+                  styles.modalSaveBtn,
+                  (!newFileName.trim() || isFileOpInProgress) && {
+                    opacity: 0.4,
+                  },
+                ]}
                 onPress={handleCreateFile}
                 disabled={!newFileName.trim() || isFileOpInProgress}
               >
@@ -748,7 +786,9 @@ export default function RepositoryDetail() {
                 ) : (
                   <FilePlus2 size={14} color="#fff" />
                 )}
-                <Text style={styles.modalSaveText}>{isFileOpInProgress ? 'Creating...' : 'Create'}</Text>
+                <Text style={styles.modalSaveText}>
+                  {isFileOpInProgress ? "Creating..." : "Create"}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -764,10 +804,12 @@ export default function RepositoryDetail() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Delete {showDeleteConfirm?.isDirectory ? 'Folder' : 'File'}</Text>
+            <Text style={styles.modalTitle}>
+              Delete {showDeleteConfirm?.isDirectory ? "Folder" : "File"}
+            </Text>
             <Text style={styles.deleteConfirmText}>
-              Are you sure you want to delete{' '}
-              <Text style={{ fontWeight: '700', color: Colors.textPrimary }}>
+              Are you sure you want to delete{" "}
+              <Text style={{ fontWeight: "700", color: Colors.textPrimary }}>
                 {showDeleteConfirm?.name}
               </Text>
               ? This action cannot be undone.
@@ -780,12 +822,19 @@ export default function RepositoryDetail() {
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.deleteConfirmBtn, isFileOpInProgress && { opacity: 0.4 }]}
-                onPress={() => showDeleteConfirm && handleDeleteFile(showDeleteConfirm)}
+                style={[
+                  styles.deleteConfirmBtn,
+                  isFileOpInProgress && { opacity: 0.4 },
+                ]}
+                onPress={() =>
+                  showDeleteConfirm && handleDeleteFile(showDeleteConfirm)
+                }
                 disabled={isFileOpInProgress}
               >
                 <Trash2 size={14} color="#fff" />
-                <Text style={styles.modalSaveText}>{isFileOpInProgress ? 'Deleting...' : 'Delete'}</Text>
+                <Text style={styles.modalSaveText}>
+                  {isFileOpInProgress ? "Deleting..." : "Delete"}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1027,7 +1076,10 @@ function toRepoRelative(repoDir: string, abs: string): string {
 
 // ── TerminalPanel component ───────────────────────────────────────────────────
 
-interface TermLine { text: string; color?: string }
+interface TermLine {
+  text: string;
+  color?: string;
+}
 
 function TerminalPanel() {
   const {
@@ -1050,7 +1102,10 @@ function TerminalPanel() {
   );
 
   const [lines, setLines] = useState<TermLine[]>([
-    { text: "GitLane Terminal — type 'help' for commands", color: Colors.accentPrimary },
+    {
+      text: "GitLane Terminal — type 'help' for commands",
+      color: Colors.accentPrimary,
+    },
   ]);
   const [cwd, setCwd] = useState<string | null>(null);
   const [cmd, setCmd] = useState("");
@@ -1063,7 +1118,10 @@ function TerminalPanel() {
     if (repoDir) {
       setCwd(repoDir);
       setLines([
-        { text: `GitLane Terminal — ${selectedRepo?.name}`, color: Colors.accentPrimary },
+        {
+          text: `GitLane Terminal — ${selectedRepo?.name}`,
+          color: Colors.accentPrimary,
+        },
         { text: `root: ${repoDir}`, color: Colors.textMuted },
         { text: "type 'help' for available commands", color: Colors.textMuted },
       ]);
@@ -1076,7 +1134,8 @@ function TerminalPanel() {
   }, [lines]);
 
   const push = useCallback(
-    (text: string, color?: string) => setLines((prev) => [...prev, { text, color }]),
+    (text: string, color?: string) =>
+      setLines((prev) => [...prev, { text, color }]),
     [],
   );
 
@@ -1118,9 +1177,9 @@ function TerminalPanel() {
 
     // Tokenise (respects "quoted strings")
     const tokens =
-      input.match(/(?:"[^"]*"|'[^']*'|[^\s])+/g)?.map((t) =>
-        t.replace(/^["']|["']$/g, ""),
-      ) ?? [];
+      input
+        .match(/(?:"[^"]*"|'[^']*'|[^\s])+/g)
+        ?.map((t) => t.replace(/^["']|["']$/g, "")) ?? [];
     const head = tokens[0]?.toLowerCase() ?? "";
     const args = tokens.slice(1);
 
@@ -1166,9 +1225,21 @@ function TerminalPanel() {
           "",
         ];
         helpLines.forEach((l) =>
-          push(l, l.startsWith("  git") || l.startsWith("  pwd") || l.startsWith("  ls") || l.startsWith("  cd") || l.startsWith("  cat") || l.startsWith("  mkdir") || l.startsWith("  touch") || l.startsWith("  rm") || l.startsWith("  echo") || l.startsWith("  clear")
-            ? Colors.textPrimary
-            : Colors.textMuted),
+          push(
+            l,
+            l.startsWith("  git") ||
+              l.startsWith("  pwd") ||
+              l.startsWith("  ls") ||
+              l.startsWith("  cd") ||
+              l.startsWith("  cat") ||
+              l.startsWith("  mkdir") ||
+              l.startsWith("  touch") ||
+              l.startsWith("  rm") ||
+              l.startsWith("  echo") ||
+              l.startsWith("  clear")
+              ? Colors.textPrimary
+              : Colors.textMuted,
+          ),
         );
         return;
       }
@@ -1205,9 +1276,15 @@ function TerminalPanel() {
       }
 
       if (head === "cd") {
-        const dest = args[0] === "~" || !args[0] ? repoDir : resolveTerminalPath(cwd, args[0]);
+        const dest =
+          args[0] === "~" || !args[0]
+            ? repoDir
+            : resolveTerminalPath(cwd, args[0]);
         if (!dest.startsWith(repoDir)) {
-          push("cd: cannot navigate above repository root", Colors.accentDanger);
+          push(
+            "cd: cannot navigate above repository root",
+            Colors.accentDanger,
+          );
           return;
         }
         try {
@@ -1220,29 +1297,50 @@ function TerminalPanel() {
       }
 
       if (head === "cat" || head === "type") {
-        if (!args[0]) { push("Usage: cat <file>", Colors.accentDanger); return; }
+        if (!args[0]) {
+          push("Usage: cat <file>", Colors.accentDanger);
+          return;
+        }
         const target = resolveTerminalPath(cwd, args[0]);
-        const content = (await expoFS.promises.readFile(target, "utf8")) as string;
+        const content = (await expoFS.promises.readFile(
+          target,
+          "utf8",
+        )) as string;
         content.split("\n").forEach((l) => push(l));
         return;
       }
 
       if (head === "mkdir") {
-        if (!args[0]) { push("Usage: mkdir <dir>", Colors.accentDanger); return; }
-        await expoFS.promises.mkdir(resolveTerminalPath(cwd, args[0]), { recursive: true });
+        if (!args[0]) {
+          push("Usage: mkdir <dir>", Colors.accentDanger);
+          return;
+        }
+        await expoFS.promises.mkdir(resolveTerminalPath(cwd, args[0]), {
+          recursive: true,
+        });
         push(`created directory: ${args[0]}`, Colors.accentPrimary);
         return;
       }
 
       if (head === "touch") {
-        if (!args[0]) { push("Usage: touch <file>", Colors.accentDanger); return; }
-        await expoFS.promises.writeFile(resolveTerminalPath(cwd, args[0]), "", "utf8");
+        if (!args[0]) {
+          push("Usage: touch <file>", Colors.accentDanger);
+          return;
+        }
+        await expoFS.promises.writeFile(
+          resolveTerminalPath(cwd, args[0]),
+          "",
+          "utf8",
+        );
         push(`created: ${args[0]}`, Colors.accentPrimary);
         return;
       }
 
       if (head === "rm" || head === "del") {
-        if (!args[0]) { push(`Usage: ${head} <file>`, Colors.accentDanger); return; }
+        if (!args[0]) {
+          push(`Usage: ${head} <file>`, Colors.accentDanger);
+          return;
+        }
         await expoFS.promises.unlink(resolveTerminalPath(cwd, args[0]));
         push(`deleted: ${args[0]}`, Colors.accentWarning);
         return;
@@ -1253,46 +1351,74 @@ function TerminalPanel() {
         const sub = args[0]?.toLowerCase();
         const gitArgs = args.slice(1);
 
-        if (!sub) { push("usage: git <command>", Colors.accentDanger); return; }
+        if (!sub) {
+          push("usage: git <command>", Colors.accentDanger);
+          return;
+        }
 
         switch (sub) {
           case "status": {
-            const matrix = await isogit.statusMatrix({ fs: expoFS, dir: repoDir });
+            const matrix = await isogit.statusMatrix({
+              fs: expoFS,
+              dir: repoDir,
+            });
             const staged: string[] = [];
             const modified: string[] = [];
             const untracked: string[] = [];
             for (const [fp, head2, workdir, stage] of matrix) {
               if (fp.startsWith(".git")) continue;
-              if (head2 === 0 && workdir === 2 && stage === 0) untracked.push(fp);
+              if (head2 === 0 && workdir === 2 && stage === 0)
+                untracked.push(fp);
               else if (stage !== head2) staged.push(fp);
               else if (workdir !== head2) modified.push(fp);
             }
             const branch =
-              (await isogit.currentBranch({ fs: expoFS, dir: repoDir, fullname: false })) ?? "HEAD";
+              (await isogit.currentBranch({
+                fs: expoFS,
+                dir: repoDir,
+                fullname: false,
+              })) ?? "HEAD";
             push(`On branch ${branch}`, Colors.accentPrimary);
             if (staged.length > 0) {
               push("Changes to be committed:", Colors.accentPrimary);
-              staged.forEach((f) => push(`\tstaged:    ${f}`, Colors.accentPrimary));
+              staged.forEach((f) =>
+                push(`\tstaged:    ${f}`, Colors.accentPrimary),
+              );
             }
             if (modified.length > 0) {
               push("Changes not staged for commit:", Colors.accentWarning);
-              modified.forEach((f) => push(`\tmodified:  ${f}`, Colors.accentWarning));
+              modified.forEach((f) =>
+                push(`\tmodified:  ${f}`, Colors.accentWarning),
+              );
             }
             if (untracked.length > 0) {
               push("Untracked files:", Colors.textMuted);
               untracked.forEach((f) => push(`\t${f}`, Colors.textMuted));
             }
-            if (staged.length === 0 && modified.length === 0 && untracked.length === 0) {
-              push("nothing to commit, working tree clean", Colors.accentPrimary);
+            if (
+              staged.length === 0 &&
+              modified.length === 0 &&
+              untracked.length === 0
+            ) {
+              push(
+                "nothing to commit, working tree clean",
+                Colors.accentPrimary,
+              );
             }
             break;
           }
 
           case "add": {
             const pathArg = gitArgs[0];
-            if (!pathArg) { push("Usage: git add <path|.>", Colors.accentDanger); break; }
+            if (!pathArg) {
+              push("Usage: git add <path|.>", Colors.accentDanger);
+              break;
+            }
             if (pathArg === ".") {
-              const matrix = await isogit.statusMatrix({ fs: expoFS, dir: repoDir });
+              const matrix = await isogit.statusMatrix({
+                fs: expoFS,
+                dir: repoDir,
+              });
               let count = 0;
               for (const [fp, head2, workdir] of matrix) {
                 if (fp.startsWith(".git")) continue;
@@ -1303,7 +1429,10 @@ function TerminalPanel() {
               }
               push(`staged ${count} file(s)`, Colors.accentPrimary);
             } else {
-              const rel = toRepoRelative(repoDir, resolveTerminalPath(cwd, pathArg));
+              const rel = toRepoRelative(
+                repoDir,
+                resolveTerminalPath(cwd, pathArg),
+              );
               await isogit.add({ fs: expoFS, dir: repoDir, filepath: rel });
               push(`staged: ${rel}`, Colors.accentPrimary);
             }
@@ -1312,9 +1441,19 @@ function TerminalPanel() {
 
           case "reset": {
             const pathArg = gitArgs[0] === "HEAD" ? gitArgs[1] : gitArgs[0];
-            if (!pathArg) { push("Usage: git reset <path>", Colors.accentDanger); break; }
-            const rel = toRepoRelative(repoDir, resolveTerminalPath(cwd, pathArg));
-            await isogit.resetIndex({ fs: expoFS, dir: repoDir, filepath: rel });
+            if (!pathArg) {
+              push("Usage: git reset <path>", Colors.accentDanger);
+              break;
+            }
+            const rel = toRepoRelative(
+              repoDir,
+              resolveTerminalPath(cwd, pathArg),
+            );
+            await isogit.resetIndex({
+              fs: expoFS,
+              dir: repoDir,
+              filepath: rel,
+            });
             push(`unstaged: ${rel}`, Colors.accentWarning);
             break;
           }
@@ -1328,7 +1467,11 @@ function TerminalPanel() {
             const msg = gitArgs.slice(mIdx + 1).join(" ");
             await commitChanges(msg);
             try {
-              const oid = await isogit.resolveRef({ fs: expoFS, dir: repoDir, ref: "HEAD" });
+              const oid = await isogit.resolveRef({
+                fs: expoFS,
+                dir: repoDir,
+                ref: "HEAD",
+              });
               push(
                 `[${selectedRepo?.currentBranch ?? "main"} ${oid.slice(0, 7)}] ${msg}`,
                 Colors.accentPrimary,
@@ -1341,17 +1484,28 @@ function TerminalPanel() {
 
           case "log": {
             const oneline = gitArgs.includes("--oneline");
-            const commits = await isogit.log({ fs: expoFS, dir: repoDir, depth: 30 });
-            if (commits.length === 0) { push("(no commits yet)", Colors.textMuted); break; }
+            const commits = await isogit.log({
+              fs: expoFS,
+              dir: repoDir,
+              depth: 30,
+            });
+            if (commits.length === 0) {
+              push("(no commits yet)", Colors.textMuted);
+              break;
+            }
             for (const c of commits) {
               const sha = c.oid.slice(0, 7);
               const msg = c.commit.message.split("\n")[0];
-              const date = new Date(c.commit.author.timestamp * 1000).toLocaleDateString();
+              const date = new Date(
+                c.commit.author.timestamp * 1000,
+              ).toLocaleDateString();
               if (oneline) {
                 push(`${sha} ${msg}`);
               } else {
                 push(`commit ${c.oid}`, Colors.accentWarning);
-                push(`Author: ${c.commit.author.name} <${c.commit.author.email}>`);
+                push(
+                  `Author: ${c.commit.author.name} <${c.commit.author.email}>`,
+                );
                 push(`Date:   ${date}`);
                 push(`\n    ${msg}\n`);
               }
@@ -1360,11 +1514,25 @@ function TerminalPanel() {
           }
 
           case "branch": {
-            if (gitArgs.length === 0 || gitArgs[0] === "-a" || gitArgs[0] === "-v") {
-              const branches = await isogit.listBranches({ fs: expoFS, dir: repoDir });
-              const current = await isogit.currentBranch({ fs: expoFS, dir: repoDir, fullname: false });
+            if (
+              gitArgs.length === 0 ||
+              gitArgs[0] === "-a" ||
+              gitArgs[0] === "-v"
+            ) {
+              const branches = await isogit.listBranches({
+                fs: expoFS,
+                dir: repoDir,
+              });
+              const current = await isogit.currentBranch({
+                fs: expoFS,
+                dir: repoDir,
+                fullname: false,
+              });
               branches.forEach((b) =>
-                push(`${b === current ? "* " : "  "}${b}`, b === current ? Colors.accentPrimary : undefined),
+                push(
+                  `${b === current ? "* " : "  "}${b}`,
+                  b === current ? Colors.accentPrimary : undefined,
+                ),
               );
             } else {
               await createBranch(selectedRepo!.id, gitArgs[0]);
@@ -1375,11 +1543,20 @@ function TerminalPanel() {
 
           case "checkout": {
             if (gitArgs[0] === "-b") {
-              if (!gitArgs[1]) { push("Usage: git checkout -b <name>", Colors.accentDanger); break; }
+              if (!gitArgs[1]) {
+                push("Usage: git checkout -b <name>", Colors.accentDanger);
+                break;
+              }
               await createBranch(selectedRepo!.id, gitArgs[1]);
-              push(`Switched to a new branch '${gitArgs[1]}'`, Colors.accentPrimary);
+              push(
+                `Switched to a new branch '${gitArgs[1]}'`,
+                Colors.accentPrimary,
+              );
             } else {
-              if (!gitArgs[0]) { push("Usage: git checkout <branch>", Colors.accentDanger); break; }
+              if (!gitArgs[0]) {
+                push("Usage: git checkout <branch>", Colors.accentDanger);
+                break;
+              }
               await switchBranch(selectedRepo!.id, gitArgs[0]);
               push(`Switched to branch '${gitArgs[0]}'`, Colors.accentPrimary);
             }
@@ -1387,7 +1564,10 @@ function TerminalPanel() {
           }
 
           case "merge": {
-            if (!gitArgs[0]) { push("Usage: git merge <branch>", Colors.accentDanger); break; }
+            if (!gitArgs[0]) {
+              push("Usage: git merge <branch>", Colors.accentDanger);
+              break;
+            }
             await mergeInto(selectedRepo!.id, gitArgs[0]);
             push(`Merged branch '${gitArgs[0]}'`, Colors.accentPrimary);
             break;
@@ -1404,11 +1584,18 @@ function TerminalPanel() {
           }
 
           case "diff": {
-            const matrix = await isogit.statusMatrix({ fs: expoFS, dir: repoDir });
+            const matrix = await isogit.statusMatrix({
+              fs: expoFS,
+              dir: repoDir,
+            });
             const dirty = matrix.filter(
-              ([fp, head2, workdir, stage]) => !fp.startsWith(".git") && workdir !== stage,
+              ([fp, head2, workdir, stage]) =>
+                !fp.startsWith(".git") && workdir !== stage,
             );
-            if (dirty.length === 0) { push("(nothing to diff — working tree clean)", Colors.textMuted); break; }
+            if (dirty.length === 0) {
+              push("(nothing to diff — working tree clean)", Colors.textMuted);
+              break;
+            }
             for (const [fp] of dirty.slice(0, 8)) {
               push(`--- a/${fp}`, Colors.accentDanger);
               push(`+++ b/${fp}`, Colors.accentPrimary);
@@ -1419,22 +1606,35 @@ function TerminalPanel() {
                 )) as string;
                 const diffLines = content.split("\n").slice(0, 25);
                 diffLines.forEach((l) => push(`+${l}`, Colors.accentPrimary));
-                if (content.split("\n").length > 25) push("... (truncated)", Colors.textMuted);
-              } catch { /* skip */ }
+                if (content.split("\n").length > 25)
+                  push("... (truncated)", Colors.textMuted);
+              } catch {
+                /* skip */
+              }
             }
-            if (dirty.length > 8) push(`... and ${dirty.length - 8} more file(s)`, Colors.textMuted);
+            if (dirty.length > 8)
+              push(
+                `... and ${dirty.length - 8} more file(s)`,
+                Colors.textMuted,
+              );
             break;
           }
 
           case "remote": {
             if (gitArgs[0] === "add") {
               const [, name, url] = gitArgs;
-              if (!name || !url) { push("Usage: git remote add <name> <url>", Colors.accentDanger); break; }
+              if (!name || !url) {
+                push("Usage: git remote add <name> <url>", Colors.accentDanger);
+                break;
+              }
               await addRemote(selectedRepo!.id, name, url);
               push(`remote '${name}' added → ${url}`, Colors.accentPrimary);
             } else {
               const remotes = await getRemotes(selectedRepo!.id);
-              if (remotes.length === 0) { push("(no remotes configured)", Colors.textMuted); break; }
+              if (remotes.length === 0) {
+                push("(no remotes configured)", Colors.textMuted);
+                break;
+              }
               remotes.forEach((r) => {
                 push(`${r.remote}\t${r.url} (fetch)`);
                 push(`${r.remote}\t${r.url} (push)`);
@@ -1444,12 +1644,18 @@ function TerminalPanel() {
           }
 
           default:
-            push(`git: '${sub}' is not a recognised git command. See 'help'.`, Colors.accentDanger);
+            push(
+              `git: '${sub}' is not a recognised git command. See 'help'.`,
+              Colors.accentDanger,
+            );
         }
         return;
       }
 
-      push(`${head}: command not found. Type 'help' to see available commands.`, Colors.accentDanger);
+      push(
+        `${head}: command not found. Type 'help' to see available commands.`,
+        Colors.accentDanger,
+      );
     } catch (err: any) {
       push(`Error: ${err?.message ?? String(err)}`, Colors.accentDanger);
     }
@@ -1481,7 +1687,10 @@ function TerminalPanel() {
         {lines.map((line, i) => (
           <Text
             key={i}
-            style={[styles.terminalLine, line.color ? { color: line.color } : undefined]}
+            style={[
+              styles.terminalLine,
+              line.color ? { color: line.color } : undefined,
+            ]}
           >
             {line.text}
           </Text>
@@ -1494,7 +1703,10 @@ function TerminalPanel() {
         <TextInput
           style={styles.terminalInput}
           value={cmd}
-          onChangeText={(v) => { setCmd(v); setHistIdx(-1); }}
+          onChangeText={(v) => {
+            setCmd(v);
+            setHistIdx(-1);
+          }}
           onSubmitEditing={run}
           autoCapitalize="none"
           autoCorrect={false}
@@ -1503,13 +1715,25 @@ function TerminalPanel() {
           placeholderTextColor={Colors.textMuted}
           returnKeyType="send"
         />
-        <TouchableOpacity style={styles.terminalHistBtn} onPress={historyUp} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.terminalHistBtn}
+          onPress={historyUp}
+          activeOpacity={0.7}
+        >
           <Text style={styles.terminalRunText}>↑</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.terminalHistBtn} onPress={historyDown} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.terminalHistBtn}
+          onPress={historyDown}
+          activeOpacity={0.7}
+        >
           <Text style={styles.terminalRunText}>↓</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.terminalRunBtn} onPress={run} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={styles.terminalRunBtn}
+          onPress={run}
+          activeOpacity={0.8}
+        >
           <Text style={styles.terminalRunText}>Run</Text>
         </TouchableOpacity>
       </View>
@@ -2040,7 +2264,7 @@ const styles = StyleSheet.create({
     flexDirection: "row" as const,
     alignItems: "center" as const,
     gap: 6,
-    backgroundColor: '#EF4444',
+    backgroundColor: "#EF4444",
     borderRadius: Radius.sm,
     paddingHorizontal: 16,
     paddingVertical: 8,
