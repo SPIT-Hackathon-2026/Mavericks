@@ -3,18 +3,14 @@
  *
  * Transfer methods (all offline unless noted):
  *
- *  1. Direct QR  – Animated QR codes, camera-to-camera.
- *                  100% offline. No WiFi, internet or native modules.
- *                  THE primary GitLane→GitLane path.
- *
- *  2. File Share – write a .gitlanepatch to device cache, open OS share sheet
+ *  1. File Share – write a .gitlanepatch to device cache, open OS share sheet
  *                  (AirDrop / Nearby Share / Bluetooth). Offline.
  *                  Receiver: document picker → import.
  *
- *  3. WebSocket Relay – WebSocket relay via PieSocket + QR session pairing.
+ *  2. WebSocket Relay – WebSocket relay via PieSocket + QR session pairing.
  *                  Requires internet but works across any network.
  *
- * All three methods share the same commit-selection UI and DiffViewer.
+ * Both methods share the same commit-selection UI and DiffViewer.
  */
 
 import React, {
@@ -51,12 +47,9 @@ import {
   FileDown,
   Check,
   Wifi,
-  QrCode,
   ScanLine,
   Radio,
   Copy,
-  Play,
-  Pause,
   Info,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
@@ -74,21 +67,9 @@ import {
   sharePatch,
   importPatch,
   deletePatchFile,
-  buildLocalDiffFiles,
-  generateSessionToken,
-  getDeviceIP,
   startSenderSession,
   joinReceiverSession,
   extractToken,
-  buildQRFrames,
-  parseQRFrame,
-  createScanState,
-  feedFrame,
-  missingFrames,
-  isComplete,
-  assemblePayload,
-  estimateTransferSeconds,
-  QR_FRAME_INTERVAL_MS,
 } from '@/services/p2p/p2pService';
 import type {
   PatchPayload,
@@ -96,7 +77,6 @@ import type {
   ReceiverSession,
   LiveStatus,
   LiveProgress,
-  QRScanState,
 } from '@/services/p2p/p2pService';
 import type { GitCommit } from '@/types/git';
 
@@ -107,7 +87,7 @@ const QR_SIZE = Math.min(SCREEN_W - 64, 280);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type TransferMethod = 'qr' | 'file' | 'relay';
+type TransferMethod = 'file' | 'relay';
 type SendStep =
   | 'select-repo'
   | 'select-commits'
@@ -199,27 +179,6 @@ function CommitRow({
   );
 }
 
-function FrameDots({ total, received }: { total: number; received: Set<number> }) {
-  if (total === 0) return null;
-  const show = Math.min(total, 24);
-  return (
-    <View style={styles.frameDots}>
-      {Array.from({ length: show }, (_, i) => (
-        <View
-          key={i}
-          style={[
-            styles.frameDot,
-            received.has(i) ? styles.frameDotDone : styles.frameDotPending,
-          ]}
-        />
-      ))}
-      {total > show && (
-        <Text style={styles.frameDotsMore}>+{total - show}</Text>
-      )}
-    </View>
-  );
-}
-
 function DoneCard({
   title,
   subtitle,
@@ -272,7 +231,7 @@ export default function TransferScreen() {
   const { repositories, settings } = useGit();
 
   const [mode, setMode] = useState(0);
-  const [method, setMethod] = useState<TransferMethod>('qr');
+  const [method, setMethod] = useState<TransferMethod>('file');
 
   // ── Send shared state ──
   const [sendStep, setSendStep] = useState<SendStep>('select-repo');
@@ -280,13 +239,6 @@ export default function TransferScreen() {
   const [selectedCommits, setSelectedCommits] = useState<Set<string>>(new Set());
   const [repoCommits, setRepoCommits] = useState<GitCommit[]>([]);
   const [isLoadingCommits, setIsLoadingCommits] = useState(false);
-
-  // ── QR Send ──
-  const [qrFrames, setQrFrames] = useState<string[]>([]);
-  const [qrFrameIdx, setQrFrameIdx] = useState(0);
-  const [qrPaused, setQrPaused] = useState(false);
-  const [qrPayload, setQrPayload] = useState<PatchPayload | null>(null);
-  const qrTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── File Send ──
   const [isSharing, setIsSharing] = useState(false);
@@ -305,11 +257,7 @@ export default function TransferScreen() {
   const [importedPayload, setImportedPayload] = useState<PatchPayload | null>(null);
   const [isImporting, setIsImporting] = useState(false);
 
-  // ── QR Receive ──
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const scanStateRef = useRef<QRScanState>(createScanState());
-  const [scanReceived, setScanReceived] = useState(new Set<number>());
-  const [scanTotal, setScanTotal] = useState(0);
   const scannedRef = useRef(false);
 
   // ── Relay Receive ──
@@ -329,20 +277,8 @@ export default function TransferScreen() {
       .finally(() => setIsLoadingCommits(false));
   }, [selectedRepoId]);
 
-  useEffect(() => {
-    if (sendStep !== 'qr-display' || method !== 'qr' || qrFrames.length === 0 || qrPaused) {
-      if (qrTimerRef.current) { clearInterval(qrTimerRef.current); qrTimerRef.current = null; }
-      return;
-    }
-    qrTimerRef.current = setInterval(() => {
-      setQrFrameIdx((prev) => (prev + 1) % qrFrames.length);
-    }, QR_FRAME_INTERVAL_MS);
-    return () => { if (qrTimerRef.current) clearInterval(qrTimerRef.current); };
-  }, [sendStep, method, qrFrames.length, qrPaused]);
-
   useEffect(() => () => {
     if (patchFileUri) deletePatchFile(patchFileUri);
-    if (qrTimerRef.current) clearInterval(qrTimerRef.current);
     senderSessionRef.current?.cancel();
     receiverSessionRef.current?.cancel();
   }, []);
@@ -373,10 +309,6 @@ export default function TransferScreen() {
     setSendStep('select-repo');
     setSelectedRepoId(null);
     setSelectedCommits(new Set());
-    setQrFrames([]);
-    setQrFrameIdx(0);
-    setQrPaused(false);
-    setQrPayload(null);
     setSharedPayload(null);
     senderSessionRef.current?.cancel();
     senderSessionRef.current = null;
@@ -387,9 +319,6 @@ export default function TransferScreen() {
   const resetReceive = useCallback(() => {
     setReceiveStep('idle');
     setImportedPayload(null);
-    scanStateRef.current = createScanState();
-    setScanReceived(new Set());
-    setScanTotal(0);
     scannedRef.current = false;
     receiverSessionRef.current?.cancel();
     receiverSessionRef.current = null;
@@ -398,39 +327,6 @@ export default function TransferScreen() {
   const handleModeChange = (idx: number) => {
     setMode(idx);
     if (idx === 0) resetSend(); else resetReceive();
-  };
-
-  // ─── QR Send ─────────────────────────────────────────────────────────────────
-
-  const handleBuildQR = async () => {
-    if (!selectedRepo) return;
-    haptic();
-    setSendStep('building');
-    try {
-      const diffFiles = await buildLocalDiffFiles(selectedRepo.id, commitShas);
-      const senderDevice = await getDeviceIP();
-      const payload: PatchPayload = {
-        type: 'gitlane-patch',
-        version: '2.0',
-        sessionToken: generateSessionToken(),
-        repoName: selectedRepo.name,
-        repoId: selectedRepo.id,
-        commits: commitShas,
-        senderName: settings.userConfig.name,
-        senderDevice,
-        timestamp: Date.now(),
-        diffFiles,
-      };
-      const frames = buildQRFrames(payload);
-      setQrPayload(payload);
-      setQrFrames(frames);
-      setQrFrameIdx(0);
-      setQrPaused(false);
-      setSendStep('qr-display');
-    } catch (e: any) {
-      Alert.alert('Error', `Could not build patch: ${e?.message ?? e}`);
-      setSendStep('select-commits');
-    }
   };
 
   // ─── File Send ────────────────────────────────────────────────────────────────
@@ -489,43 +385,8 @@ export default function TransferScreen() {
   // ─── QR Receive ───────────────────────────────────────────────────────────────
 
   const handleOpenQRScan = async () => {
-    if (!cameraPermission?.granted) {
-      const { granted } = await requestCameraPermission();
-      if (!granted) {
-        Alert.alert('Camera Required', "Allow camera access to scan the sender's QR codes.");
-        return;
-      }
-    }
-    scanStateRef.current = createScanState();
-    setScanReceived(new Set());
-    setScanTotal(0);
-    scannedRef.current = false;
-    haptic(Haptics.ImpactFeedbackStyle.Light);
-    setReceiveStep('scanning');
+    // Deprecated: Direct QR removed. Kept as no-op placeholder.
   };
-
-  const handleQRScanned = useCallback((raw: string) => {
-    const frame = parseQRFrame(raw);
-    if (!frame) return;
-    const state = scanStateRef.current;
-    const wasNew = feedFrame(state, frame);
-    if (wasNew) {
-      setScanTotal(state.total);
-      setScanReceived(new Set(state.received.keys()));
-    }
-    if (isComplete(state) && !scannedRef.current) {
-      scannedRef.current = true;
-      try {
-        const payload = assemblePayload(state);
-        haptic();
-        setImportedPayload(payload);
-        setReceiveStep('review-diff');
-      } catch (e: any) {
-        Alert.alert('Scan Error', `Could not decode patch: ${e?.message ?? e}`);
-        setReceiveStep('idle');
-      }
-    }
-  }, []);
 
   // ─── File Receive ─────────────────────────────────────────────────────────────
 
@@ -640,17 +501,14 @@ export default function TransferScreen() {
 
   function renderSelectCommits() {
     const labelMap: Record<TransferMethod, string> = {
-      qr: 'Show Animated QR',
       file: 'Share Patch File',
       relay: 'Start Live Transfer',
     };
     const iconMap: Record<TransferMethod, React.ReactNode> = {
-      qr: <QrCode size={18} color="#fff" />,
       file: <Share2 size={18} color="#fff" />,
       relay: <Radio size={18} color="#fff" />,
     };
     const onGoMap: Record<TransferMethod, () => void> = {
-      qr: handleBuildQR,
       file: handleFileShare,
       relay: handleStartRelaySend,
     };
@@ -723,108 +581,61 @@ export default function TransferScreen() {
   // ─── Render: QR / Relay display ───────────────────────────────────────────────
 
   function renderQRDisplay() {
-    if (method === 'relay') {
-      const statusMap: Record<LiveStatus, string> = {
-        connecting: 'Connecting to relay…',
-        'waiting-peer': 'Waiting for receiver to scan…',
-        building: 'Computing diffs — receiver can join now…',
-        transferring: `Sending… ${liveSendProgress.sent}/${liveSendProgress.total} chunks`,
-        complete: 'Transfer complete!',
-        error: 'Connection error',
-      };
-      const isDone = liveSendStatus === 'complete';
-      return (
-        <View style={styles.qrPanel}>
-          <View style={styles.qrCard}>
-            {liveQRData ? (
-              <QRCode value={liveQRData} size={QR_SIZE} color={Colors.textPrimary} backgroundColor={Colors.bgSecondary} />
-            ) : (
-              <View style={[{ width: QR_SIZE, height: QR_SIZE }, styles.qrPlaceholder]}>
-                <ActivityIndicator color={Colors.accentPrimary} />
-              </View>
-            )}
-          </View>
-          {liveToken ? (
-            <TouchableOpacity
-              style={styles.tokenBox}
-              onPress={async () => { await Clipboard.setStringAsync(liveToken); haptic(Haptics.ImpactFeedbackStyle.Light); }}
-              activeOpacity={0.75}
-            >
-              <Text style={styles.tokenText}>{liveToken}</Text>
-              <Copy size={14} color={Colors.textMuted} />
-            </TouchableOpacity>
-          ) : null}
-          <Text style={styles.qrHint}>
-            Open GitLane on receiver → Receive → WebSocket Relay, then scan this QR or type the code
-          </Text>
-          <View style={styles.liveStatusRow}>
-            {!isDone
-              ? <ActivityIndicator size="small" color={Colors.accentPrimary} />
-              : <CheckCircle size={15} color={Colors.accentPrimary} />}
-            <Text style={[styles.liveStatusText, isDone && { color: Colors.accentPrimary }]}>
-              {statusMap[liveSendStatus]}
-            </Text>
-          </View>
-          {liveSendStatus === 'transferring' && liveSendProgress.total > 0 && (
-            <View style={[styles.progressTrack, { width: '85%' }]}>
-              <View style={[styles.progressFill, { width: `${Math.round((liveSendProgress.sent / liveSendProgress.total) * 100)}%` }]} />
-            </View>
-          )}
-          <View style={{ width: '100%', marginTop: Spacing.xl, gap: Spacing.sm }}>
-            {isDone ? (
-              <GlowButton title="Done" onPress={resetSend} fullWidth />
-            ) : (
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => { senderSessionRef.current?.cancel(); senderSessionRef.current = null; setSendStep('select-commits'); }}>
-                <XCircle size={16} color={Colors.accentDanger} />
-                <Text style={styles.cancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-      );
-    }
-
-    // ── Animated Direct QR ──
-    const currentFrame = qrFrames[qrFrameIdx] ?? '';
+    const statusMap: Record<LiveStatus, string> = {
+      connecting: 'Connecting to relay…',
+      'waiting-peer': 'Waiting for receiver to scan…',
+      building: 'Computing diffs — receiver can join now…',
+      transferring: `Sending… ${liveSendProgress.sent}/${liveSendProgress.total} chunks`,
+      complete: 'Transfer complete!',
+      error: 'Connection error',
+    };
+    const isDone = liveSendStatus === 'complete';
     return (
       <View style={styles.qrPanel}>
-        <View style={styles.qrMethodBadge}>
-          <QrCode size={12} color={Colors.accentPrimary} />
-          <Text style={styles.qrMethodBadgeText}>Direct QR · Offline · App to App</Text>
-        </View>
         <View style={styles.qrCard}>
-          {currentFrame ? (
-            <QRCode value={currentFrame} size={QR_SIZE} color={Colors.textPrimary} backgroundColor={Colors.bgSecondary} ecl="M" />
+          {liveQRData ? (
+            <QRCode value={liveQRData} size={QR_SIZE} color={Colors.textPrimary} backgroundColor={Colors.bgSecondary} />
           ) : (
             <View style={[{ width: QR_SIZE, height: QR_SIZE }, styles.qrPlaceholder]}>
               <ActivityIndicator color={Colors.accentPrimary} />
             </View>
           )}
         </View>
-        <View style={styles.frameCounterRow}>
-          <Text style={styles.frameCounterText}>
-            Frame {qrFrameIdx + 1} / {qrFrames.length}
-          </Text>
-          <TouchableOpacity style={styles.pauseBtn} onPress={() => setQrPaused((p) => !p)}>
-            {qrPaused ? <Play size={16} color={Colors.accentPrimary} /> : <Pause size={16} color={Colors.accentPrimary} />}
-            <Text style={styles.pauseBtnText}>{qrPaused ? 'Resume' : 'Pause'}</Text>
+        {liveToken ? (
+          <TouchableOpacity
+            style={styles.tokenBox}
+            onPress={async () => { await Clipboard.setStringAsync(liveToken); haptic(Haptics.ImpactFeedbackStyle.Light); }}
+            activeOpacity={0.75}
+          >
+            <Text style={styles.tokenText}>{liveToken}</Text>
+            <Copy size={14} color={Colors.textMuted} />
           </TouchableOpacity>
-        </View>
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${((qrFrameIdx + 1) / Math.max(qrFrames.length, 1)) * 100}%` }]} />
-        </View>
+        ) : null}
         <Text style={styles.qrHint}>
-          Open GitLane on the receiver → Receive → Direct QR and point the camera here
+          Open GitLane on receiver → Receive → WebSocket Relay, then scan this QR or type the code
         </Text>
-        {qrPayload && (
-          <View style={styles.qrMeta}>
-            <Text style={styles.qrMetaItem}>📦 {qrPayload.repoName}</Text>
-            <Text style={styles.qrMetaItem}>🔀 {qrPayload.diffFiles.length} files · {qrPayload.commits.length} commit{qrPayload.commits.length !== 1 ? 's' : ''}</Text>
-            <Text style={styles.qrMetaItem}>⏱ ~{estimateTransferSeconds(JSON.stringify(qrPayload))}s total</Text>
+        <View style={styles.liveStatusRow}>
+          {!isDone
+            ? <ActivityIndicator size="small" color={Colors.accentPrimary} />
+            : <CheckCircle size={15} color={Colors.accentPrimary} />}
+          <Text style={[styles.liveStatusText, isDone && { color: Colors.accentPrimary }]}>
+            {statusMap[liveSendStatus]}
+          </Text>
+        </View>
+        {liveSendStatus === 'transferring' && liveSendProgress.total > 0 && (
+          <View style={[styles.progressTrack, { width: '85%' }]}>
+            <View style={[styles.progressFill, { width: `${Math.round((liveSendProgress.sent / liveSendProgress.total) * 100)}%` }]} />
           </View>
         )}
-        <View style={{ width: '100%', marginTop: Spacing.lg }}>
-          <GlowButton title="Done Sharing" onPress={resetSend} fullWidth icon={<Check size={18} color="#fff" />} />
+        <View style={{ width: '100%', marginTop: Spacing.xl, gap: Spacing.sm }}>
+          {isDone ? (
+            <GlowButton title="Done" onPress={resetSend} fullWidth />
+          ) : (
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => { senderSessionRef.current?.cancel(); senderSessionRef.current = null; setSendStep('select-commits'); }}>
+              <XCircle size={16} color={Colors.accentDanger} />
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     );
@@ -857,30 +668,6 @@ export default function TransferScreen() {
   // ─── Render: Receive idle ─────────────────────────────────────────────────────
 
   function renderReceiveIdle() {
-    if (method === 'qr') {
-      return (
-        <View style={styles.receivePanel}>
-          <View style={styles.receiveIllo}>
-            <QrCode size={52} color={Colors.accentPrimary} strokeWidth={1.2} />
-          </View>
-          <Text style={styles.receiveTitle}>Direct QR Receive</Text>
-          <Text style={styles.receiveSub}>
-            Point your camera at the sender's animated QR codes. GitLane automatically
-            reassembles all frames and shows you the diff.{'\n\n'}
-            100% offline — no WiFi or internet needed.
-          </Text>
-          <View style={styles.offlineBadgeRow}>
-            <View style={styles.offlineBadge}><Zap size={12} color={Colors.accentPrimary} /><Text style={styles.offlineBadgeText}>100% Offline</Text></View>
-            <View style={styles.offlineBadge}><QrCode size={12} color={Colors.accentPrimary} /><Text style={styles.offlineBadgeText}>Camera Only</Text></View>
-            <View style={styles.offlineBadge}><Smartphone size={12} color={Colors.accentPrimary} /><Text style={styles.offlineBadgeText}>App to App</Text></View>
-          </View>
-          <View style={{ width: '100%', marginTop: Spacing.lg }}>
-            <GlowButton title="Open Camera Scanner" onPress={handleOpenQRScan} fullWidth icon={<ScanLine size={18} color="#fff" />} />
-          </View>
-        </View>
-      );
-    }
-
     if (method === 'file') {
       return (
         <View style={styles.receivePanel}>
@@ -963,21 +750,15 @@ export default function TransferScreen() {
     if (receiveStep === 'idle') return renderReceiveIdle();
 
     if (receiveStep === 'scanning') {
-      const isRelayQR = method === 'relay';
-      const pct = scanTotal > 0 ? Math.round((scanReceived.size / scanTotal) * 100) : 0;
       return (
         <View style={styles.scannerWrapper}>
           <CameraView
             style={styles.scannerCamera}
             facing="back"
             onBarcodeScanned={({ data }) => {
-              if (isRelayQR) {
-                if (scannedRef.current) return;
-                const token = extractToken(data);
-                if (token) { scannedRef.current = true; setReceiveStep('idle'); handleJoinRelay(token); }
-              } else {
-                handleQRScanned(data);
-              }
+              if (scannedRef.current) return;
+              const token = extractToken(data);
+              if (token) { scannedRef.current = true; setReceiveStep('idle'); handleJoinRelay(token); }
             }}
             barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
           />
@@ -987,35 +768,11 @@ export default function TransferScreen() {
               <XCircle size={26} color="#fff" />
             </TouchableOpacity>
             <View style={{ flex: 1, alignItems: 'center' }}>
-              <Text style={styles.scanTopTitle}>{isRelayQR ? 'Scan Relay QR' : 'Direct QR Scan'}</Text>
-              {!isRelayQR && <Text style={styles.scanTopSub}>Keep camera steady — auto-assembling frames</Text>}
+              <Text style={styles.scanTopTitle}>Scan Relay QR</Text>
+              <Text style={styles.scanTopSub}>Align the relay QR inside the frame</Text>
             </View>
             <View style={{ width: 32 }} />
           </View>
-          {!isRelayQR && (
-            <View style={styles.scanBottomBar}>
-              {scanTotal > 0 ? (
-                <>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <Text style={styles.scanProgressText}>{scanReceived.size} / {scanTotal} frames ({pct}%)</Text>
-                    {pct === 100 && <CheckCircle size={15} color={Colors.accentPrimary} />}
-                  </View>
-                  <View style={[styles.progressTrack, { width: '100%', marginTop: 6 }]}>
-                    <View style={[styles.progressFill, { width: `${pct}%` }]} />
-                  </View>
-                  <FrameDots total={scanTotal} received={scanReceived} />
-                  {scanReceived.size < scanTotal && (
-                    <Text style={styles.scanMissingText}>
-                      Missing: {missingFrames(scanStateRef.current).slice(0, 8).join(', ')}
-                      {missingFrames(scanStateRef.current).length > 8 ? '…' : ''}
-                    </Text>
-                  )}
-                </>
-              ) : (
-                <Text style={styles.scanProgressText}>Waiting for first frame…</Text>
-              )}
-            </View>
-          )}
         </View>
       );
     }
@@ -1068,7 +825,7 @@ export default function TransferScreen() {
             <View style={styles.receivedPill}>
               <View style={styles.receivedDot} />
               <Text style={styles.receivedPillText}>
-                {method === 'qr' ? 'QR Scan' : method === 'file' ? 'Imported' : 'Relay'}
+                {method === 'file' ? 'Imported' : 'Relay'}
               </Text>
             </View>
           </View>
@@ -1097,7 +854,7 @@ export default function TransferScreen() {
           meta={[
             { label: 'Sender', value: importedPayload.senderName },
             { label: 'Commits', value: String(importedPayload.commits.length) },
-            { label: 'Method', value: method === 'qr' ? 'Direct QR' : method === 'file' ? 'File Share' : 'WebSocket Relay' },
+            { label: 'Method', value: method === 'file' ? 'File Share' : 'WebSocket Relay' },
           ]}
           onDone={resetReceive}
         />
@@ -1134,7 +891,6 @@ export default function TransferScreen() {
         sendStep !== 'file-complete' &&
         receiveStep === 'idle' && (
           <View style={styles.methodBar}>
-            <MethodChip label="Direct QR" icon={<QrCode size={14} color={method === 'qr' ? Colors.accentPrimary : Colors.textMuted} />} active={method === 'qr'} onPress={() => { haptic(Haptics.ImpactFeedbackStyle.Light); setMethod('qr'); }} />
             <MethodChip label="File Share" icon={<FileDown size={14} color={method === 'file' ? Colors.accentPrimary : Colors.textMuted} />} active={method === 'file'} onPress={() => { haptic(Haptics.ImpactFeedbackStyle.Light); setMethod('file'); }} />
             <MethodChip label="WebSocket Relay" icon={<Radio size={14} color={method === 'relay' ? Colors.accentPrimary : Colors.textMuted} />} active={method === 'relay'} onPress={() => { haptic(Haptics.ImpactFeedbackStyle.Light); setMethod('relay'); }} />
           </View>

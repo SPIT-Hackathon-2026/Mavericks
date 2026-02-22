@@ -1,10 +1,9 @@
 /**
  * p2pService.ts  —  Unified GitLane P2P Transfer Service
  *
- * All three transfer methods in one file:
- *   1. File Share   — OS share sheet (AirDrop / Nearby Share / Bluetooth). Fully offline.
- *   2. Animated QR  — camera-to-camera frame-by-frame. 100% offline, no WiFi needed.
- *   3. WebSocket Relay   — WebSocket relay via PieSocket. Requires internet.
+ * Transfer methods in one file:
+ *   1. File Share      — OS share sheet (AirDrop / Nearby Share / Bluetooth). Fully offline.
+ *   2. WebSocket Relay — WebSocket relay via PieSocket. Requires internet.
  */
 
 import { File, Paths } from 'expo-file-system';
@@ -287,105 +286,7 @@ export async function deletePatchFile(fileUri: string): Promise<void> {
   try { const f = new File(fileUri); if (f.exists) f.delete(); } catch { /* ignore */ }
 }
 
-// ─── Section 4: Animated QR Transfer (fully offline, camera-to-camera) ────────
-//
-//  Frame format:  GL2:{sessionId6}:{frameIdx}/{totalFrames}:{base64Chunk}
-//  900 chars/frame, 650 ms/frame  ≈ 1.5 fps — safe for QR v35 + EC level M.
-
-export const QR_CHUNK_CHARS = 900;
-export const QR_FRAME_INTERVAL_MS = 650;
-
-export interface QRFrame {
-  sessionId: string;
-  idx: number;
-  total: number;
-  data: string;
-}
-
-export interface QRScanState {
-  sessionId: string | null;
-  total: number;
-  received: Map<number, string>;
-}
-
-function makeQRSessionId(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let id = '';
-  for (let i = 0; i < 6; i++) id += chars[Math.floor(Math.random() * chars.length)];
-  return id;
-}
-
-function b64Encode(str: string): string {
-  try { return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (_, p1) => String.fromCharCode(parseInt(p1, 16)))); }
-  catch { return btoa(unescape(encodeURIComponent(str))); }
-}
-
-function b64Decode(b64: string): string {
-  try { return decodeURIComponent(Array.from(atob(b64)).map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')); }
-  catch { return decodeURIComponent(escape(atob(b64))); }
-}
-
-export function buildQRFrames(payload: PatchPayload): string[] {
-  const sessionId = makeQRSessionId();
-  const encoded = b64Encode(JSON.stringify(payload));
-  const frames: string[] = [];
-  for (let i = 0; i < encoded.length; i += QR_CHUNK_CHARS)
-    frames.push(`GL2:${sessionId}:${frames.length}/${Math.ceil(encoded.length / QR_CHUNK_CHARS)}:${encoded.slice(i, i + QR_CHUNK_CHARS)}`);
-  // Patch total now that we know frame count
-  return frames.map((f, idx) => {
-    const parts = f.split(':');
-    parts[2] = `${idx}/${frames.length}`;
-    return parts.join(':');
-  });
-}
-
-export function parseQRFrame(raw: string): QRFrame | null {
-  if (!raw.startsWith('GL2:')) return null;
-  const parts = raw.split(':');
-  if (parts.length < 5) return null;
-  const [, sessionId, indexPart, ...dataParts] = parts;
-  const data = dataParts.join(':');
-  const [idxStr, totalStr] = indexPart.split('/');
-  const idx = parseInt(idxStr, 10), total = parseInt(totalStr, 10);
-  if (isNaN(idx) || isNaN(total) || idx < 0 || total <= 0) return null;
-  return { sessionId, idx, total, data };
-}
-
-export function createScanState(): QRScanState {
-  return { sessionId: null, total: 0, received: new Map() };
-}
-
-export function feedFrame(state: QRScanState, frame: QRFrame): boolean {
-  if (state.sessionId && state.sessionId !== frame.sessionId) return false;
-  if (!state.sessionId) { state.sessionId = frame.sessionId; state.total = frame.total; }
-  if (state.received.has(frame.idx)) return false;
-  state.received.set(frame.idx, frame.data);
-  return true;
-}
-
-export function missingFrames(state: QRScanState): number[] {
-  if (state.total === 0) return [];
-  return Array.from({ length: state.total }, (_, i) => i).filter(i => !state.received.has(i));
-}
-
-export function isComplete(state: QRScanState): boolean {
-  return state.total > 0 && state.received.size === state.total;
-}
-
-export function assemblePayload(state: QRScanState): PatchPayload {
-  if (!isComplete(state)) throw new Error('Scan incomplete — missing frames.');
-  const encoded = Array.from({ length: state.total }, (_, i) => state.received.get(i) ?? '').join('');
-  const payload = JSON.parse(b64Decode(encoded)) as PatchPayload;
-  if (payload.type !== 'gitlane-patch') throw new Error('Not a valid GitLane patch.');
-  return payload;
-}
-
-export function estimateTransferSeconds(payloadJson: string): number {
-  const frames = Math.ceil((payloadJson.length * 1.4) / QR_CHUNK_CHARS);
-  return Math.ceil((frames * QR_FRAME_INTERVAL_MS) / 1000);
-}
-
-// ─── Section 5: WebSocket Relay ────────────────────────────────────────────────
+// ─── Section 4: WebSocket Relay ────────────────────────────────────────────────
 //
 //  Relay config — either use your PieSocket app or fall back.
 //  Set EXPO_PUBLIC_PIESOCKET_KEY to your PieSocket API key and we will use
