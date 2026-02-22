@@ -1,3 +1,6 @@
+import { gitEngine } from "@/services/git/engine";
+import { expoFS } from "@/services/git/expo-fs";
+import isogit from "isomorphic-git";
 import GraphScreen from "@/app/(tabs)/graph";
 import SegmentedControl from "@/components/SegmentedControl";
 import StatusBadge from "@/components/StatusBadge";
@@ -33,6 +36,7 @@ import React, {
     useCallback,
     useEffect,
     useMemo,
+    useRef,
     useState
 } from "react";
 import {
@@ -998,13 +1002,37 @@ export default function RepositoryDetail() {
   );
 }
 
+// ── Terminal helpers ──────────────────────────────────────────────────────────
+
+/** Resolve a user-typed path to an absolute POSIX path inside the repo. */
+function resolveTerminalPath(cwd: string, input: string): string {
+  if (!input || input === ".") return cwd;
+  const segments = input.startsWith("/")
+    ? input.split("/").filter(Boolean)
+    : [...cwd.split("/").filter(Boolean), ...input.split("/")];
+  const out: string[] = [];
+  for (const s of segments) {
+    if (s === "..") out.pop();
+    else if (s !== ".") out.push(s);
+  }
+  return "/" + out.join("/");
+}
+
+/** Turn an absolute POSIX path into a path relative to the repo root. */
+function toRepoRelative(repoDir: string, abs: string): string {
+  if (abs.startsWith(repoDir + "/")) return abs.slice(repoDir.length + 1);
+  if (abs === repoDir) return ".";
+  return abs; // already relative or outside – return as-is
+}
+
+// ── TerminalPanel component ───────────────────────────────────────────────────
+
+interface TermLine { text: string; color?: string }
+
 function TerminalPanel() {
   const {
     selectedRepo,
-    files,
-    commits,
-    stageFile,
-    unstageFile,
+    settings,
     commitChanges,
     createBranch,
     switchBranch,
@@ -1012,196 +1040,476 @@ function TerminalPanel() {
     showToast,
     pushSelectedRepo,
     pullSelectedRepo,
+    addRemote,
+    getRemotes,
   } = useGit();
-  const [history, setHistory] = useState<string[]>([
-    "Type 'help' to see available commands",
-  ]);
-  const [cmd, setCmd] = useState("");
 
-  const append = useCallback(
-    (line: string) => setHistory((h) => [...h, line]),
+  const repoDir = useMemo(
+    () => (selectedRepo ? gitEngine.resolveRepoDir(selectedRepo.id) : null),
+    [selectedRepo],
+  );
+
+  const [lines, setLines] = useState<TermLine[]>([
+    { text: "GitLane Terminal — type 'help' for commands", color: Colors.accentPrimary },
+  ]);
+  const [cwd, setCwd] = useState<string | null>(null);
+  const [cmd, setCmd] = useState("");
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [histIdx, setHistIdx] = useState(-1);
+  const scrollRef = useRef<ScrollView>(null);
+
+  // Reset terminal when repo changes
+  useEffect(() => {
+    if (repoDir) {
+      setCwd(repoDir);
+      setLines([
+        { text: `GitLane Terminal — ${selectedRepo?.name}`, color: Colors.accentPrimary },
+        { text: `root: ${repoDir}`, color: Colors.textMuted },
+        { text: "type 'help' for available commands", color: Colors.textMuted },
+      ]);
+    }
+  }, [repoDir]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-scroll on new output
+  useEffect(() => {
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, [lines]);
+
+  const push = useCallback(
+    (text: string, color?: string) => setLines((prev) => [...prev, { text, color }]),
     [],
   );
+
+  const cwdDisplay = useMemo(() => {
+    if (!cwd || !repoDir) return "~";
+    return cwd === repoDir ? "~" : "~/" + cwd.slice(repoDir.length + 1);
+  }, [cwd, repoDir]);
+
+  const historyUp = useCallback(() => {
+    setHistIdx((i) => {
+      const next = Math.min(i + 1, cmdHistory.length - 1);
+      setCmd(cmdHistory[next] ?? "");
+      return next;
+    });
+  }, [cmdHistory]);
+
+  const historyDown = useCallback(() => {
+    setHistIdx((i) => {
+      const next = Math.max(i - 1, -1);
+      setCmd(next === -1 ? "" : (cmdHistory[next] ?? ""));
+      return next;
+    });
+  }, [cmdHistory]);
 
   const run = useCallback(async () => {
     const input = cmd.trim();
     if (!input) return;
-    append(`> ${input}`);
+
+    const prompt = `${selectedRepo?.name ?? "repo"}:${cwdDisplay} $`;
+    push(`${prompt} ${input}`, Colors.accentSecondary);
     setCmd("");
-    const parts =
-      input
-        .match(/(?:\"[^\"]*\"|'[^']*'|\\.|[^\\s])+/g)
-        ?.map((s) => s.replace(/^["']|["']$/g, "")) ?? [];
-    const head = parts[0]?.toLowerCase();
-    const args = parts.slice(1);
+    setCmdHistory((h) => [input, ...h].slice(0, 100));
+    setHistIdx(-1);
+
+    if (!repoDir || !cwd) {
+      push("Error: no repository selected.", Colors.accentDanger);
+      return;
+    }
+
+    // Tokenise (respects "quoted strings")
+    const tokens =
+      input.match(/(?:"[^"]*"|'[^']*'|[^\s])+/g)?.map((t) =>
+        t.replace(/^["']|["']$/g, ""),
+      ) ?? [];
+    const head = tokens[0]?.toLowerCase() ?? "";
+    const args = tokens.slice(1);
+
     try {
-      switch (head) {
-        case "help":
-          append(
-            "Available: status, add <path>, reset <path>, commit -m <msg>, branch <name>, checkout <branch>, merge <branch>, push [branch], pull [branch], log, files, open <path>",
-          );
-          break;
-        case "status": {
-          if (!selectedRepo) {
-            append("No repository selected");
-            break;
-          }
-          const changed = files.filter(
-            (f) =>
-              !f.isDirectory &&
-              (f.status === "modified" ||
-                f.status === "staged" ||
-                f.status === "untracked"),
-          );
-          append(`${changed.length} changed files`);
-          changed.forEach((f) => append(`${f.status?.padEnd(9)} ${f.path}`));
-          break;
-        }
-        case "files":
-          files.forEach(function walk(f: any) {
-            if (f.isDirectory && f.children) {
-              append(`${f.path}/`);
-              f.children.forEach(walk);
-            } else {
-              append(`${f.path}`);
-            }
-          });
-          break;
-        case "add": {
-          const p = args[0];
-          if (!p) {
-            append("Usage: add <path>");
-            break;
-          }
-          await stageFile(p.replace(/^\//, ""));
-          append(`staged ${p}`);
-          showToast("success", `Staged ${p}`);
-          break;
-        }
-        case "reset": {
-          const p = args[0];
-          if (!p) {
-            append("Usage: reset <path>");
-            break;
-          }
-          await unstageFile(p.replace(/^\//, ""));
-          append(`unstaged ${p}`);
-          showToast("info", `Unstaged ${p}`);
-          break;
-        }
-        case "commit": {
-          const idx = args.findIndex((a) => a === "-m");
-          if (idx === -1 || !args[idx + 1]) {
-            append("Usage: commit -m <message>");
-            break;
-          }
-          const msg = args.slice(idx + 1).join(" ");
-          await commitChanges(msg);
-          append(`committed: ${msg}`);
-          break;
-        }
-        case "branch": {
-          const name = args[0];
-          if (!selectedRepo || !name) {
-            append("Usage: branch <name>");
-            break;
-          }
-          await createBranch(selectedRepo.id, name);
-          append(`branch created: ${name}`);
-          break;
-        }
-        case "checkout": {
-          const branch = args[0];
-          if (!selectedRepo || !branch) {
-            append("Usage: checkout <branch>");
-            break;
-          }
-          await switchBranch(selectedRepo.id, branch);
-          append(`switched to: ${branch}`);
-          break;
-        }
-        case "merge": {
-          const branch = args[0];
-          if (!selectedRepo || !branch) {
-            append("Usage: merge <branch>");
-            break;
-          }
-          await mergeInto(selectedRepo.id, branch);
-          append(`merged branch: ${branch}`);
-          break;
-        }
-        case "push": {
-          const branch = args[0] || undefined;
-          await pushSelectedRepo(branch);
-          append(`pushed to origin${branch ? `/${branch}` : ""}`);
-          break;
-        }
-        case "pull": {
-          const branch = args[0] || undefined;
-          await pullSelectedRepo(branch);
-          append(`pulled from origin${branch ? `/${branch}` : ""}`);
-          break;
-        }
-        case "log":
-          commits.forEach((c) =>
-            append(`${c.shortSha} ${c.date} ${c.message}`),
-          );
-          break;
-        default:
-          append(`Command not found: ${head}`);
+      // ── built-ins ──────────────────────────────────────────────────
+      if (head === "clear" || head === "cls") {
+        setLines([]);
+        return;
       }
+
+      if (head === "help") {
+        const helpLines = [
+          "",
+          "  Filesystem",
+          "  ──────────────────────────────────────────",
+          "  pwd                     print working directory",
+          "  ls [path]               list directory contents",
+          "  cd <path>               change directory  (cd ~ to go back to root)",
+          "  cat <file>              print file contents",
+          "  mkdir <dir>             create directory",
+          "  touch <file>            create empty file",
+          "  rm <file>               delete file",
+          "  echo <text>             print text",
+          "  clear                   clear screen",
+          "",
+          "  Git",
+          "  ──────────────────────────────────────────",
+          "  git status              show working-tree status",
+          "  git add <path|.>        stage file(s)",
+          "  git reset [HEAD] <path> unstage file",
+          "  git commit -m <msg>     commit staged changes",
+          "  git log [--oneline]     show commit history",
+          "  git branch              list branches",
+          "  git branch <name>       create branch",
+          "  git checkout <branch>   switch branch",
+          "  git checkout -b <name>  create + switch",
+          "  git merge <branch>      merge branch into current",
+          "  git diff                show unstaged changes",
+          "  git remote -v           list remotes",
+          "  git remote add <n> <u>  add remote",
+          "  git push                push to origin",
+          "  git pull                pull from origin",
+          "",
+        ];
+        helpLines.forEach((l) =>
+          push(l, l.startsWith("  git") || l.startsWith("  pwd") || l.startsWith("  ls") || l.startsWith("  cd") || l.startsWith("  cat") || l.startsWith("  mkdir") || l.startsWith("  touch") || l.startsWith("  rm") || l.startsWith("  echo") || l.startsWith("  clear")
+            ? Colors.textPrimary
+            : Colors.textMuted),
+        );
+        return;
+      }
+
+      if (head === "pwd") {
+        push(cwd);
+        return;
+      }
+
+      if (head === "echo") {
+        push(args.join(" "));
+        return;
+      }
+
+      if (head === "ls" || head === "dir") {
+        const target = args[0] ? resolveTerminalPath(cwd, args[0]) : cwd;
+        const entries = await expoFS.promises.readdir(target);
+        const visible = entries.filter((e) => e !== ".git");
+        if (visible.length === 0) {
+          push("(empty directory)", Colors.textMuted);
+        } else {
+          const labelled: string[] = [];
+          for (const name of visible) {
+            try {
+              const s = await expoFS.promises.stat(`${target}/${name}`);
+              labelled.push(s.isDirectory() ? name + "/" : name);
+            } catch {
+              labelled.push(name);
+            }
+          }
+          push(labelled.join("    "));
+        }
+        return;
+      }
+
+      if (head === "cd") {
+        const dest = args[0] === "~" || !args[0] ? repoDir : resolveTerminalPath(cwd, args[0]);
+        if (!dest.startsWith(repoDir)) {
+          push("cd: cannot navigate above repository root", Colors.accentDanger);
+          return;
+        }
+        try {
+          await expoFS.promises.readdir(dest); // throws if absent / not a dir
+          setCwd(dest);
+        } catch {
+          push(`cd: no such directory: ${args[0]}`, Colors.accentDanger);
+        }
+        return;
+      }
+
+      if (head === "cat" || head === "type") {
+        if (!args[0]) { push("Usage: cat <file>", Colors.accentDanger); return; }
+        const target = resolveTerminalPath(cwd, args[0]);
+        const content = (await expoFS.promises.readFile(target, "utf8")) as string;
+        content.split("\n").forEach((l) => push(l));
+        return;
+      }
+
+      if (head === "mkdir") {
+        if (!args[0]) { push("Usage: mkdir <dir>", Colors.accentDanger); return; }
+        await expoFS.promises.mkdir(resolveTerminalPath(cwd, args[0]), { recursive: true });
+        push(`created directory: ${args[0]}`, Colors.accentPrimary);
+        return;
+      }
+
+      if (head === "touch") {
+        if (!args[0]) { push("Usage: touch <file>", Colors.accentDanger); return; }
+        await expoFS.promises.writeFile(resolveTerminalPath(cwd, args[0]), "", "utf8");
+        push(`created: ${args[0]}`, Colors.accentPrimary);
+        return;
+      }
+
+      if (head === "rm" || head === "del") {
+        if (!args[0]) { push(`Usage: ${head} <file>`, Colors.accentDanger); return; }
+        await expoFS.promises.unlink(resolveTerminalPath(cwd, args[0]));
+        push(`deleted: ${args[0]}`, Colors.accentWarning);
+        return;
+      }
+
+      // ── git ────────────────────────────────────────────────────────
+      if (head === "git") {
+        const sub = args[0]?.toLowerCase();
+        const gitArgs = args.slice(1);
+
+        if (!sub) { push("usage: git <command>", Colors.accentDanger); return; }
+
+        switch (sub) {
+          case "status": {
+            const matrix = await isogit.statusMatrix({ fs: expoFS, dir: repoDir });
+            const staged: string[] = [];
+            const modified: string[] = [];
+            const untracked: string[] = [];
+            for (const [fp, head2, workdir, stage] of matrix) {
+              if (fp.startsWith(".git")) continue;
+              if (head2 === 0 && workdir === 2 && stage === 0) untracked.push(fp);
+              else if (stage !== head2) staged.push(fp);
+              else if (workdir !== head2) modified.push(fp);
+            }
+            const branch =
+              (await isogit.currentBranch({ fs: expoFS, dir: repoDir, fullname: false })) ?? "HEAD";
+            push(`On branch ${branch}`, Colors.accentPrimary);
+            if (staged.length > 0) {
+              push("Changes to be committed:", Colors.accentPrimary);
+              staged.forEach((f) => push(`\tstaged:    ${f}`, Colors.accentPrimary));
+            }
+            if (modified.length > 0) {
+              push("Changes not staged for commit:", Colors.accentWarning);
+              modified.forEach((f) => push(`\tmodified:  ${f}`, Colors.accentWarning));
+            }
+            if (untracked.length > 0) {
+              push("Untracked files:", Colors.textMuted);
+              untracked.forEach((f) => push(`\t${f}`, Colors.textMuted));
+            }
+            if (staged.length === 0 && modified.length === 0 && untracked.length === 0) {
+              push("nothing to commit, working tree clean", Colors.accentPrimary);
+            }
+            break;
+          }
+
+          case "add": {
+            const pathArg = gitArgs[0];
+            if (!pathArg) { push("Usage: git add <path|.>", Colors.accentDanger); break; }
+            if (pathArg === ".") {
+              const matrix = await isogit.statusMatrix({ fs: expoFS, dir: repoDir });
+              let count = 0;
+              for (const [fp, head2, workdir] of matrix) {
+                if (fp.startsWith(".git")) continue;
+                if (workdir !== head2) {
+                  await isogit.add({ fs: expoFS, dir: repoDir, filepath: fp });
+                  count++;
+                }
+              }
+              push(`staged ${count} file(s)`, Colors.accentPrimary);
+            } else {
+              const rel = toRepoRelative(repoDir, resolveTerminalPath(cwd, pathArg));
+              await isogit.add({ fs: expoFS, dir: repoDir, filepath: rel });
+              push(`staged: ${rel}`, Colors.accentPrimary);
+            }
+            break;
+          }
+
+          case "reset": {
+            const pathArg = gitArgs[0] === "HEAD" ? gitArgs[1] : gitArgs[0];
+            if (!pathArg) { push("Usage: git reset <path>", Colors.accentDanger); break; }
+            const rel = toRepoRelative(repoDir, resolveTerminalPath(cwd, pathArg));
+            await isogit.resetIndex({ fs: expoFS, dir: repoDir, filepath: rel });
+            push(`unstaged: ${rel}`, Colors.accentWarning);
+            break;
+          }
+
+          case "commit": {
+            const mIdx = gitArgs.findIndex((a) => a === "-m");
+            if (mIdx === -1 || !gitArgs[mIdx + 1]) {
+              push("Usage: git commit -m <message>", Colors.accentDanger);
+              break;
+            }
+            const msg = gitArgs.slice(mIdx + 1).join(" ");
+            await commitChanges(msg);
+            try {
+              const oid = await isogit.resolveRef({ fs: expoFS, dir: repoDir, ref: "HEAD" });
+              push(
+                `[${selectedRepo?.currentBranch ?? "main"} ${oid.slice(0, 7)}] ${msg}`,
+                Colors.accentPrimary,
+              );
+            } catch {
+              push(`committed: ${msg}`, Colors.accentPrimary);
+            }
+            break;
+          }
+
+          case "log": {
+            const oneline = gitArgs.includes("--oneline");
+            const commits = await isogit.log({ fs: expoFS, dir: repoDir, depth: 30 });
+            if (commits.length === 0) { push("(no commits yet)", Colors.textMuted); break; }
+            for (const c of commits) {
+              const sha = c.oid.slice(0, 7);
+              const msg = c.commit.message.split("\n")[0];
+              const date = new Date(c.commit.author.timestamp * 1000).toLocaleDateString();
+              if (oneline) {
+                push(`${sha} ${msg}`);
+              } else {
+                push(`commit ${c.oid}`, Colors.accentWarning);
+                push(`Author: ${c.commit.author.name} <${c.commit.author.email}>`);
+                push(`Date:   ${date}`);
+                push(`\n    ${msg}\n`);
+              }
+            }
+            break;
+          }
+
+          case "branch": {
+            if (gitArgs.length === 0 || gitArgs[0] === "-a" || gitArgs[0] === "-v") {
+              const branches = await isogit.listBranches({ fs: expoFS, dir: repoDir });
+              const current = await isogit.currentBranch({ fs: expoFS, dir: repoDir, fullname: false });
+              branches.forEach((b) =>
+                push(`${b === current ? "* " : "  "}${b}`, b === current ? Colors.accentPrimary : undefined),
+              );
+            } else {
+              await createBranch(selectedRepo!.id, gitArgs[0]);
+              push(`branch '${gitArgs[0]}' created`, Colors.accentPrimary);
+            }
+            break;
+          }
+
+          case "checkout": {
+            if (gitArgs[0] === "-b") {
+              if (!gitArgs[1]) { push("Usage: git checkout -b <name>", Colors.accentDanger); break; }
+              await createBranch(selectedRepo!.id, gitArgs[1]);
+              push(`Switched to a new branch '${gitArgs[1]}'`, Colors.accentPrimary);
+            } else {
+              if (!gitArgs[0]) { push("Usage: git checkout <branch>", Colors.accentDanger); break; }
+              await switchBranch(selectedRepo!.id, gitArgs[0]);
+              push(`Switched to branch '${gitArgs[0]}'`, Colors.accentPrimary);
+            }
+            break;
+          }
+
+          case "merge": {
+            if (!gitArgs[0]) { push("Usage: git merge <branch>", Colors.accentDanger); break; }
+            await mergeInto(selectedRepo!.id, gitArgs[0]);
+            push(`Merged branch '${gitArgs[0]}'`, Colors.accentPrimary);
+            break;
+          }
+
+          case "push": {
+            await pushSelectedRepo();
+            break;
+          }
+
+          case "pull": {
+            await pullSelectedRepo();
+            break;
+          }
+
+          case "diff": {
+            const matrix = await isogit.statusMatrix({ fs: expoFS, dir: repoDir });
+            const dirty = matrix.filter(
+              ([fp, head2, workdir, stage]) => !fp.startsWith(".git") && workdir !== stage,
+            );
+            if (dirty.length === 0) { push("(nothing to diff — working tree clean)", Colors.textMuted); break; }
+            for (const [fp] of dirty.slice(0, 8)) {
+              push(`--- a/${fp}`, Colors.accentDanger);
+              push(`+++ b/${fp}`, Colors.accentPrimary);
+              try {
+                const content = (await expoFS.promises.readFile(
+                  `${repoDir}/${fp}`,
+                  "utf8",
+                )) as string;
+                const diffLines = content.split("\n").slice(0, 25);
+                diffLines.forEach((l) => push(`+${l}`, Colors.accentPrimary));
+                if (content.split("\n").length > 25) push("... (truncated)", Colors.textMuted);
+              } catch { /* skip */ }
+            }
+            if (dirty.length > 8) push(`... and ${dirty.length - 8} more file(s)`, Colors.textMuted);
+            break;
+          }
+
+          case "remote": {
+            if (gitArgs[0] === "add") {
+              const [, name, url] = gitArgs;
+              if (!name || !url) { push("Usage: git remote add <name> <url>", Colors.accentDanger); break; }
+              await addRemote(selectedRepo!.id, name, url);
+              push(`remote '${name}' added → ${url}`, Colors.accentPrimary);
+            } else {
+              const remotes = await getRemotes(selectedRepo!.id);
+              if (remotes.length === 0) { push("(no remotes configured)", Colors.textMuted); break; }
+              remotes.forEach((r) => {
+                push(`${r.remote}\t${r.url} (fetch)`);
+                push(`${r.remote}\t${r.url} (push)`);
+              });
+            }
+            break;
+          }
+
+          default:
+            push(`git: '${sub}' is not a recognised git command. See 'help'.`, Colors.accentDanger);
+        }
+        return;
+      }
+
+      push(`${head}: command not found. Type 'help' to see available commands.`, Colors.accentDanger);
     } catch (err: any) {
-      append(`Error: ${err?.message ?? String(err)}`);
-      showToast("error", err?.message ?? "Command failed");
+      push(`Error: ${err?.message ?? String(err)}`, Colors.accentDanger);
     }
   }, [
     cmd,
-    files,
-    commits,
+    cwd,
+    repoDir,
+    cwdDisplay,
     selectedRepo,
-    append,
-    stageFile,
-    unstageFile,
     commitChanges,
     createBranch,
     switchBranch,
     mergeInto,
-    showToast,
     pushSelectedRepo,
     pullSelectedRepo,
+    addRemote,
+    getRemotes,
+    push,
   ]);
 
   return (
     <View style={{ flex: 1 }}>
       <ScrollView
+        ref={scrollRef}
         style={styles.terminalOutput}
         contentContainerStyle={styles.terminalOutputContent}
+        keyboardShouldPersistTaps="handled"
       >
-        {history.map((line, i) => (
-          <Text key={i} style={styles.terminalLine}>
-            {line}
+        {lines.map((line, i) => (
+          <Text
+            key={i}
+            style={[styles.terminalLine, line.color ? { color: line.color } : undefined]}
+          >
+            {line.text}
           </Text>
         ))}
       </ScrollView>
       <View style={styles.terminalPromptRow}>
-        <Text style={styles.terminalPromptLabel}>
-          {selectedRepo?.name ?? "repo"} $
+        <Text style={styles.terminalPromptLabel} numberOfLines={1}>
+          {selectedRepo?.name ?? "repo"}:{cwdDisplay} $
         </Text>
         <TextInput
           style={styles.terminalInput}
           value={cmd}
-          onChangeText={setCmd}
+          onChangeText={(v) => { setCmd(v); setHistIdx(-1); }}
           onSubmitEditing={run}
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder="Type a command…"
+          spellCheck={false}
+          placeholder="Enter command…"
           placeholderTextColor={Colors.textMuted}
+          returnKeyType="send"
         />
-        <TouchableOpacity
-          style={styles.terminalRunBtn}
-          onPress={run}
-          activeOpacity={0.8}
-        >
+        <TouchableOpacity style={styles.terminalHistBtn} onPress={historyUp} activeOpacity={0.7}>
+          <Text style={styles.terminalRunText}>↑</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.terminalHistBtn} onPress={historyDown} activeOpacity={0.7}>
+          <Text style={styles.terminalRunText}>↓</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.terminalRunBtn} onPress={run} activeOpacity={0.8}>
           <Text style={styles.terminalRunText}>Run</Text>
         </TouchableOpacity>
       </View>
@@ -1608,6 +1916,14 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     fontSize: 12,
     color: Colors.textPrimary,
+    backgroundColor: Colors.bgTertiary,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: Colors.borderDefault,
+  },
+  terminalHistBtn: {
     backgroundColor: Colors.bgTertiary,
     borderRadius: Radius.sm,
     paddingHorizontal: 10,
