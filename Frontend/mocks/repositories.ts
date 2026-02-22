@@ -235,7 +235,19 @@ export const mockConflicts: ConflictFile[] = [
     theirsBranch: 'feature/redesign',
     oursContent: 'export const Button = ({ title, onPress }) => {\n  return (\n    <TouchableOpacity\n      style={styles.primaryButton}\n      onPress={onPress}\n    >\n      <Text style={styles.buttonText}>{title}</Text>\n    </TouchableOpacity>\n  );\n};',
     theirsContent: 'export const Button = ({ title, onPress, variant }) => {\n  return (\n    <Pressable\n      style={[styles.button, styles[variant]]}\n      onPress={onPress}\n    >\n      <Text style={styles.text}>{title}</Text>\n    </Pressable>\n  );\n};',
+    baseContent: 'export const Button = ({ title, onPress }) => {\n  return (\n    <TouchableOpacity style={styles.button} onPress={onPress}>\n      <Text>{title}</Text>\n    </TouchableOpacity>\n  );\n};',
     resultContent: '',
+    hunks: [
+      {
+        id: 'hunk-0',
+        oursContent: 'export const Button = ({ title, onPress }) => {\n  return (\n    <TouchableOpacity\n      style={styles.primaryButton}\n      onPress={onPress}\n    >\n      <Text style={styles.buttonText}>{title}</Text>\n    </TouchableOpacity>\n  );\n};',
+        theirsContent: 'export const Button = ({ title, onPress, variant }) => {\n  return (\n    <Pressable\n      style={[styles.button, styles[variant]]}\n      onPress={onPress}\n    >\n      <Text style={styles.text}>{title}</Text>\n    </Pressable>\n  );\n};',
+        baseContent: 'export const Button = ({ title, onPress }) => {\n  return (\n    <TouchableOpacity style={styles.button} onPress={onPress}>\n      <Text>{title}</Text>\n    </TouchableOpacity>\n  );\n};',
+        resolved: false,
+        resolution: null,
+        resultContent: '',
+      },
+    ],
   },
   {
     id: 'c2',
@@ -247,7 +259,19 @@ export const mockConflicts: ConflictFile[] = [
     theirsBranch: 'feature/redesign',
     oursContent: 'export function parseCommit(raw: string) {\n  const lines = raw.split(\'\\n\');\n  return { sha: lines[0], message: lines[1] };\n}',
     theirsContent: 'export function parseCommit(raw: string): Commit {\n  const [sha, ...rest] = raw.split(\'\\n\');\n  return { sha, message: rest.join(\'\\n\'), parsed: true };\n}',
+    baseContent: 'export function parseCommit(raw: string) {\n  return { sha: raw.split("\\n")[0] };\n}',
     resultContent: '',
+    hunks: [
+      {
+        id: 'hunk-0',
+        oursContent: 'export function parseCommit(raw: string) {\n  const lines = raw.split(\'\\n\');\n  return { sha: lines[0], message: lines[1] };\n}',
+        theirsContent: 'export function parseCommit(raw: string): Commit {\n  const [sha, ...rest] = raw.split(\'\\n\');\n  return { sha, message: rest.join(\'\\n\'), parsed: true };\n}',
+        baseContent: 'export function parseCommit(raw: string) {\n  return { sha: raw.split("\\n")[0] };\n}',
+        resolved: false,
+        resolution: null,
+        resultContent: '',
+      },
+    ],
   },
   {
     id: 'c3',
@@ -259,7 +283,19 @@ export const mockConflicts: ConflictFile[] = [
     theirsBranch: 'feature/redesign',
     oursContent: '"dependencies": {\n  "react": "^18.2.0",\n  "react-native": "^0.72.0"\n}',
     theirsContent: '"dependencies": {\n  "react": "^18.3.0",\n  "react-native": "^0.73.0",\n  "react-native-reanimated": "^3.0.0"\n}',
+    baseContent: '"dependencies": {\n  "react": "^18.0.0",\n  "react-native": "^0.72.0"\n}',
     resultContent: '',
+    hunks: [
+      {
+        id: 'hunk-0',
+        oursContent: '"dependencies": {\n  "react": "^18.2.0",\n  "react-native": "^0.72.0"\n}',
+        theirsContent: '"dependencies": {\n  "react": "^18.3.0",\n  "react-native": "^0.73.0",\n  "react-native-reanimated": "^3.0.0"\n}',
+        baseContent: '"dependencies": {\n  "react": "^18.0.0",\n  "react-native": "^0.72.0"\n}',
+        resolved: false,
+        resolution: null,
+        resultContent: '',
+      },
+    ],
   },
 ];
 

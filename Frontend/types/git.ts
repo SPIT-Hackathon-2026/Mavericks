@@ -63,6 +63,16 @@ export interface Repository {
   commitCount: number;
 }
 
+export interface ConflictHunk {
+  id: string;
+  baseContent: string;
+  oursContent: string;
+  theirsContent: string;
+  resolved: boolean;
+  resolution: 'ours' | 'theirs' | 'both' | 'manual' | null;
+  resultContent: string;
+}
+
 export interface ConflictFile {
   id: string;
   path: string;
@@ -71,9 +81,20 @@ export interface ConflictFile {
   resolved: boolean;
   oursContent: string;
   theirsContent: string;
+  baseContent: string;
   resultContent: string;
   oursBranch: string;
   theirsBranch: string;
+  hunks: ConflictHunk[];
+}
+
+export interface MergeState {
+  inProgress: boolean;
+  repoId: string;
+  oursBranch: string;
+  theirsBranch: string;
+  conflicts: ConflictFile[];
+  txId: string;
 }
 
 export interface UserConfig {

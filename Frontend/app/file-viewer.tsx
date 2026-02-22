@@ -32,6 +32,8 @@ import {
   Send,
   FolderOpen,
   Circle,
+  Save,
+  RotateCcw,
   MessageCircle,
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
@@ -229,7 +231,7 @@ export default function FileViewer() {
     ext: string;
     filePath?: string;
   }>();
-  const { files, selectedRepo } = useGit();
+  const { files, selectedRepo, saveFile, revertFile } = useGit();
 
   const initialContent = params.content ?? "";
 
@@ -240,11 +242,39 @@ export default function FileViewer() {
   );
   const [content, setContent] = useState(initialContent);
   const [editContent, setEditContent] = useState(initialContent);
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [copied, setCopied] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
   const [toastVisible, setToastVisible] = useState(false);
   const [lintError, setLintError] = useState<string | null>(null);
+
+  // ── Load file content directly from disk if not passed via params ──
+  // This fixes the issue where cloned repo file contents are empty/truncated
+  // when passed through URL search params.
+  React.useEffect(() => {
+    async function loadContent() {
+      if (content && content.length > 0) return; // Already have content
+      if (!selectedRepo || !filePath) return;
+
+      setIsLoadingContent(true);
+      try {
+        const relPath = filePath.replace(/^\//, '');
+        const fullPath = `${selectedRepo.path}/${relPath}`;
+        const fileContent = (await expoFS.promises.readFile(fullPath, { encoding: 'utf8' })) as string;
+        if (fileContent && fileContent.length > 0) {
+          setContent(fileContent);
+          setEditContent(fileContent);
+          console.log(`[FileViewer] Loaded content from disk: ${relPath} (${fileContent.length} chars)`);
+        }
+      } catch (err) {
+        console.warn('[FileViewer] Failed to load content from disk:', err);
+      } finally {
+        setIsLoadingContent(false);
+      }
+    }
+    loadContent();
+  }, [selectedRepo, filePath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // tree drawer
   const [treeOpen, setTreeOpen] = useState(false);
@@ -274,6 +304,8 @@ export default function FileViewer() {
     [filePath]
   );
   const canCommit = editContent !== content && commitMsg.trim().length > 0;
+  const canSave = editContent !== content;
+  const [isSaving, setIsSaving] = useState(false);
 
   function validateJSON(text: string): string | null {
     try {
@@ -369,8 +401,18 @@ export default function FileViewer() {
   }, []);
 
   const handleSelectFile = useCallback(
-    (file: GitFile) => {
-      const c = file.content ?? "";
+    async (file: GitFile) => {
+      let c = file.content ?? "";
+      // If content is empty, try reading from disk
+      if (!c && selectedRepo && file.path) {
+        try {
+          const relPath = file.path.replace(/^\//, '');
+          const fullPath = `${selectedRepo.path}/${relPath}`;
+          c = (await expoFS.promises.readFile(fullPath, { encoding: 'utf8' })) as string;
+        } catch {
+          c = "";
+        }
+      }
       setFileName(file.name);
       setFileExt(file.extension ?? "");
       setFilePath(file.path);
@@ -382,7 +424,7 @@ export default function FileViewer() {
       if (Platform.OS !== "web")
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     },
-    [closeTree]
+    [closeTree, selectedRepo]
   );
 
   const { stageFile, unstageFile } = useGit();
@@ -417,6 +459,51 @@ export default function FileViewer() {
     },
     [content]
   );
+
+  // ── Save (local only, no commit) ──────────────────────────────────────
+  const handleSave = useCallback(async () => {
+    if (!canSave || !selectedRepo || isSaving) return;
+    setIsSaving(true);
+    try {
+      const relPath = filePath.replace(/^\//, '');
+      await saveFile(relPath, editContent);
+      setContent(editContent);
+      if (Platform.OS !== 'web')
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err) {
+      if (Platform.OS !== 'web')
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [canSave, isSaving, editContent, filePath, selectedRepo, saveFile]);
+
+  // ── Revert (restore from HEAD) ────────────────────────────────────────
+  const handleRevert = useCallback(async () => {
+    if (!selectedRepo) return;
+    const relPath = filePath.replace(/^\//, '');
+    try {
+      await revertFile(relPath);
+      // Re-read the file content from disk after revert
+      const fullPath = `${selectedRepo.path}/${relPath}`;
+      let restored = '';
+      try {
+        restored = (await expoFS.promises.readFile(fullPath, { encoding: 'utf8' })) as string;
+      } catch {
+        // file was deleted (didn't exist at HEAD) – navigate back
+        router.back();
+        return;
+      }
+      setContent(restored);
+      setEditContent(restored);
+      setMode('view');
+      if (Platform.OS !== 'web')
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err) {
+      if (Platform.OS !== 'web')
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
+  }, [filePath, selectedRepo, revertFile, router]);
 
   // ── Commit ────────────────────────────────────────────────────────────
   const { commitChanges } = useGit();
@@ -604,6 +691,17 @@ export default function FileViewer() {
       >
         {mode === "view" ? (
           /* ── View mode ── */
+          isLoadingContent ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: Colors.textMuted, fontSize: 14 }}>Loading file content…</Text>
+            </View>
+          ) : content.length === 0 ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+              <Text style={{ color: Colors.textMuted, fontSize: 14, textAlign: 'center' }}>
+                No content to display. The file may be empty or binary.
+              </Text>
+            </View>
+          ) : (
           <ScrollView
             style={styles.codeScroll}
             showsVerticalScrollIndicator
@@ -626,6 +724,7 @@ export default function FileViewer() {
               </View>
             </ScrollView>
           </ScrollView>
+          )
         ) : (
           /* ── Edit mode ── */
           <View style={styles.editOuter}>
@@ -658,6 +757,32 @@ export default function FileViewer() {
         {mode === "edit" && (
           <View style={styles.commitPanel}>
             <View style={styles.commitDivider} />
+
+            {/* Save + Revert row */}
+            <View style={styles.saveRevertRow}>
+              <TouchableOpacity
+                style={[styles.saveBtn, !canSave && styles.commitBtnOff]}
+                onPress={handleSave}
+                disabled={!canSave || isSaving}
+                activeOpacity={0.8}
+              >
+                <Save size={13} color={canSave ? '#fff' : Colors.textMuted} />
+                <Text style={[styles.commitBtnText, !canSave && styles.commitBtnTextOff]}>
+                  {isSaving ? 'Saving…' : 'Save locally'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.revertBtn}
+                onPress={handleRevert}
+                activeOpacity={0.8}
+              >
+                <RotateCcw size={13} color={Colors.accentWarning} />
+                <Text style={[styles.commitBtnText, { color: Colors.accentWarning }]}>
+                  Revert
+                </Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.commitRow}>
               <GitCommit size={15} color={Colors.textMuted} />
               <TextInput
@@ -1021,6 +1146,34 @@ const styles = StyleSheet.create({
   },
   commitBtnTextOff: {
     color: Colors.textMuted,
+  },
+  saveRevertRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
+  saveBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: Colors.accentPrimary,
+    paddingVertical: 9,
+    borderRadius: Radius.sm,
+    ...Shadows.glow,
+  },
+  revertBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: Colors.bgTertiary,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: Colors.accentWarning + "44",
   },
 
   // Overlay + tree drawer

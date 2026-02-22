@@ -1,14 +1,17 @@
+import type {
+    ChangeType,
+    ConflictFile,
+    ConflictHunk,
+    FileStatus,
+    GitBranch,
+    GitCommit,
+    GitFile,
+    MergeState,
+    Repository,
+} from "@/types/git";
 import git from "isomorphic-git";
 import http from "isomorphic-git/http/web";
 import { expoFS } from "./expo-fs";
-import type {
-  Repository,
-  GitFile,
-  GitCommit,
-  GitBranch,
-  FileStatus,
-  ChangeType,
-} from "@/types/git";
 
 // ─── P2P diff types ──────────────────────────────────────────────────────────
 
@@ -26,7 +29,6 @@ interface WalkerEntry {
   mode(): Promise<number>;
   content(): Promise<Uint8Array | void>;
 }
-
 
 // ---------------------------------------------------------------------------
 // File-system & constants
@@ -47,7 +49,7 @@ const TAG = "[GitEngine]";
 
 export interface TransactionEntry {
   id: string;
-  type: "commit" | "merge" | "branch" | "clone" | "pull";
+  type: "commit" | "merge" | "branch" | "clone" | "pull" | "push";
   status: "PENDING" | "COMPLETED" | "FAILED";
   message?: string;
   startedAt: number;
@@ -75,7 +77,7 @@ async function writeTransactions(dir: string, entries: TransactionEntry[]) {
   await fs.promises.writeFile(
     txFilePath(dir),
     JSON.stringify(entries, null, 2),
-    "utf8"
+    "utf8",
   );
   console.log(TAG, `TX log updated â†’ ${entries.length} entries`);
 }
@@ -142,7 +144,7 @@ function formatTimestamp(timestamp?: number): string {
 function ensureStatus(
   head: number,
   workdir: number,
-  stage: number
+  stage: number,
 ): FileStatus {
   if (head === 0 && workdir === 2 && stage === 0) return "untracked";
   if (workdir === 2 && stage === 2) return "staged";
@@ -154,7 +156,7 @@ function ensureStatus(
 function changeTypeFromStatus(
   head: number,
   workdir: number,
-  stage: number
+  stage: number,
 ): ChangeType | undefined {
   if (head === 0 && workdir === 2) return "A";
   if (head === 1 && workdir === 0 && stage === 0) return "D";
@@ -172,12 +174,8 @@ async function ensureDirDeep(dir: string) {
 }
 
 async function removeDir(dir: string) {
-  try {
-    // ExpoFS rmdir deletes recursively
-    await fs.promises.rmdir(dir);
-  } catch (err) {
-    console.warn(TAG, "removeDir failed", err);
-  }
+  // ExpoFS rmdir deletes recursively — propagate errors to caller
+  await fs.promises.rmdir(dir);
 }
 
 export class GitEngine {
@@ -207,7 +205,7 @@ export class GitEngine {
     url: string,
     name: string,
     onProgress?: (phase: string, loaded: number, total: number) => void,
-    token?: string
+    token?: string,
   ): Promise<Repository> {
     await this.init();
     const safeName = name.trim().replace(/\s+/g, "-");
@@ -250,15 +248,31 @@ export class GitEngine {
     }
   }
 
-  async push(repoId: string, token: string): Promise<void> {
+  async push(
+    repoId: string,
+    token: string,
+    branch?: string,
+    author?: { name: string; email: string },
+  ): Promise<{ clean: true } | { clean: false; mergeState: MergeState }> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
+
+    // Check that a remote exists before attempting push
+    const remotes = await git.listRemotes({ fs, dir });
+    if (remotes.length === 0) {
+      throw new Error(
+        "No remote configured. Add a remote (e.g. origin) before pushing.",
+      );
+    }
+
     const ref =
-      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+      branch ??
+      (await git.currentBranch({ fs, dir, fullname: false })) ??
+      "main";
     const txId = randomId();
     await appendTx(dir, {
       id: txId,
-      type: "pull",
+      type: "push",
       status: "PENDING",
       message: `push ${ref}`,
       startedAt: Date.now(),
@@ -274,15 +288,328 @@ export class GitEngine {
       });
       await completeTx(dir, txId);
       await deleteGitCache(dir);
-      console.log(TAG, `push COMPLETE â†’ ${repoId} (${ref})`);
+      console.log(TAG, `push COMPLETE -> ${repoId} (${ref})`);
+      return { clean: true };
+    } catch (err: any) {
+      // ── PushRejectedError: remote has diverged — pull first, then retry ──
+      const isPushRejected =
+        err?.code === 'PushRejectedError' ||
+        (err?.message && err.message.includes('not a simple fast-forward'));
+
+      if (!isPushRejected) {
+        await failTx(dir, txId);
+        console.error(TAG, `push FAILED -> ${repoId}`, err);
+        throw err;
+      }
+
+      console.log(TAG, `push rejected (not fast-forward) — pulling first, then retrying…`);
+
+      // 1. Fetch remote changes
+      try {
+        await git.fetch({
+          fs,
+          http,
+          dir,
+          remote: "origin",
+          ref,
+          singleBranch: true,
+          onAuth: () => ({ username: token, password: "" }),
+        });
+      } catch (fetchErr) {
+        await failTx(dir, txId);
+        console.error(TAG, `push→fetch FAILED -> ${repoId}`, fetchErr);
+        throw fetchErr;
+      }
+
+      // 2. Merge remote into local (with conflict detection)
+      const mergeAuthor = author ?? { name: "GitLane User", email: "user@gitlane.app" };
+      const theirRef = `remotes/origin/${ref}`;
+
+      // Update the tx message so RecoveryAlert can detect merge-in-progress
+      await appendTx(dir, {
+        id: txId,
+        type: "merge",
+        status: "PENDING",
+        message: `MERGE_IN_PROGRESS: ${ref} <- ${theirRef} (push sync)`,
+        startedAt: Date.now(),
+      });
+
+      let mergeClean = false;
+      try {
+        const mergeResult = await git.merge({
+          fs,
+          dir,
+          ours: ref,
+          theirs: theirRef,
+          author: mergeAuthor,
+          abortOnConflict: false,
+        });
+
+        if (mergeResult.oid && !mergeResult.alreadyMerged) {
+          await git.checkout({ fs, dir, ref, force: true });
+          mergeClean = true;
+        } else if (mergeResult.alreadyMerged) {
+          mergeClean = true;
+        }
+      } catch (mergeErr: any) {
+        const isConflict =
+          mergeErr?.code === 'MergeConflictError' ||
+          mergeErr?.code === 'MergeNotSupportedError' ||
+          (mergeErr?.message && mergeErr.message.includes('onflict'));
+        const isUnmerged =
+          mergeErr?.code === 'UnmergedPathsError' ||
+          (mergeErr?.message && mergeErr.message.includes('nmerged'));
+
+        if (isConflict) {
+          console.log(TAG, `push→merge detected conflicts — entering resolution mode`);
+          const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+          return conflictResult;
+        }
+
+        if (isUnmerged) {
+          // Leftover unmerged entries from a previous merge — force-checkout to clean up, then retry
+          console.warn(TAG, `push→merge hit UnmergedPathsError — cleaning up & retrying`);
+          try {
+            await git.checkout({ fs, dir, ref, force: true });
+            try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_HEAD')); } catch {}
+            try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_MSG')); } catch {}
+
+            const retryResult = await git.merge({
+              fs, dir, ours: ref, theirs: theirRef,
+              author: mergeAuthor, abortOnConflict: false,
+            });
+            if (retryResult.oid && !retryResult.alreadyMerged) {
+              await git.checkout({ fs, dir, ref, force: true });
+              // Retry push after clean merge
+              await git.push({
+                fs, http, dir, remote: 'origin', ref,
+                onAuth: () => ({ username: token, password: '' }),
+              });
+              await completeTx(dir, txId);
+              await deleteGitCache(dir);
+              console.log(TAG, `push COMPLETE (after unmerged cleanup) -> ${repoId} (${ref})`);
+              return { clean: true };
+            }
+            // Still has conflicts after retry
+            const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+            return conflictResult;
+          } catch (cleanupErr) {
+            console.error(TAG, `push→merge cleanup retry also failed`, cleanupErr);
+          }
+        }
+
+        await failTx(dir, txId);
+        console.error(TAG, `push→merge FAILED -> ${repoId}`, mergeErr);
+        throw mergeErr;
+      }
+
+      if (!mergeClean) {
+        // Merge wasn't clean but no error was thrown — check for conflict markers
+        const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+        if (conflictResult.mergeState.conflicts.length > 0) {
+          return conflictResult;
+        }
+      }
+
+      // 3. Merge was clean — retry push
+      try {
+        await git.push({
+          fs,
+          http,
+          dir,
+          remote: "origin",
+          ref,
+          onAuth: () => ({ username: token, password: "" }),
+        });
+        await completeTx(dir, txId);
+        await deleteGitCache(dir);
+        console.log(TAG, `push COMPLETE (after pull-merge) -> ${repoId} (${ref})`);
+        return { clean: true };
+      } catch (retryErr) {
+        await failTx(dir, txId);
+        console.error(TAG, `push (retry) FAILED -> ${repoId}`, retryErr);
+        throw retryErr;
+      }
+    }
+  }
+
+  async pull(
+    repoId: string,
+    token: string,
+    branch?: string,
+    author?: { name: string; email: string },
+  ): Promise<{ clean: true } | { clean: false; mergeState: MergeState }> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+
+    const remotes = await git.listRemotes({ fs, dir });
+    if (remotes.length === 0) {
+      throw new Error(
+        "No remote configured. Add a remote (e.g. origin) before pulling.",
+      );
+    }
+
+    const ref =
+      branch ??
+      (await git.currentBranch({ fs, dir, fullname: false })) ??
+      "main";
+    const txId = randomId();
+    await appendTx(dir, {
+      id: txId,
+      type: "pull",
+      status: "PENDING",
+      message: `pull ${ref}`,
+      startedAt: Date.now(),
+    });
+    try {
+      await git.fetch({
+        fs,
+        http,
+        dir,
+        remote: "origin",
+        ref,
+        singleBranch: true,
+        onAuth: () => ({ username: token, password: "" }),
+      });
+
+      const mergeAuthor = author ?? { name: "GitLane User", email: "user@gitlane.app" };
+      const theirRef = `remotes/origin/${ref}`;
+
+      let mergeClean = false;
+      try {
+        const mergeResult = await git.merge({
+          fs,
+          dir,
+          ours: ref,
+          theirs: theirRef,
+          author: mergeAuthor,
+          abortOnConflict: false,
+        });
+
+        if (mergeResult.oid && !mergeResult.alreadyMerged) {
+          await git.checkout({ fs, dir, ref, force: true });
+          mergeClean = true;
+        } else if (mergeResult.alreadyMerged) {
+          mergeClean = true;
+        }
+      } catch (mergeErr: any) {
+        const isConflict =
+          mergeErr?.code === 'MergeConflictError' ||
+          mergeErr?.code === 'MergeNotSupportedError' ||
+          (mergeErr?.message && mergeErr.message.includes('onflict'));
+        const isUnmerged =
+          mergeErr?.code === 'UnmergedPathsError' ||
+          (mergeErr?.message && mergeErr.message.includes('nmerged'));
+
+        if (isConflict) {
+          console.log(TAG, `pull→merge detected conflicts — entering resolution mode`);
+          await appendTx(dir, {
+            id: txId,
+            type: "merge",
+            status: "PENDING",
+            message: `MERGE_IN_PROGRESS: ${ref} <- ${theirRef} (pull)`,
+            startedAt: Date.now(),
+          });
+          return await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+        }
+
+        if (isUnmerged) {
+          // Leftover unmerged entries from a previous merge — clean up & retry
+          console.warn(TAG, `pull→merge hit UnmergedPathsError — cleaning up & retrying`);
+          try {
+            await git.checkout({ fs, dir, ref, force: true });
+            try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_HEAD')); } catch {}
+            try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_MSG')); } catch {}
+
+            const retryResult = await git.merge({
+              fs, dir, ours: ref, theirs: theirRef,
+              author: mergeAuthor, abortOnConflict: false,
+            });
+            if (retryResult.oid && !retryResult.alreadyMerged) {
+              await git.checkout({ fs, dir, ref, force: true });
+              mergeClean = true;
+            } else if (retryResult.alreadyMerged) {
+              mergeClean = true;
+            }
+            // If still not clean, fall through to the !mergeClean check below
+          } catch (cleanupErr: any) {
+            const isRetryConflict =
+              cleanupErr?.code === 'MergeConflictError' ||
+              cleanupErr?.code === 'MergeNotSupportedError' ||
+              (cleanupErr?.message && cleanupErr.message.includes('onflict'));
+            if (isRetryConflict) {
+              console.log(TAG, `pull→merge retry detected conflicts`);
+              await appendTx(dir, {
+                id: txId, type: "merge", status: "PENDING",
+                message: `MERGE_IN_PROGRESS: ${ref} <- ${theirRef} (pull)`,
+                startedAt: Date.now(),
+              });
+              return await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+            }
+            throw cleanupErr;
+          }
+        }
+
+        if (!isConflict && !isUnmerged) {
+          throw mergeErr; // re-throw non-conflict/non-unmerged errors to outer catch
+        }
+      }
+
+      if (!mergeClean) {
+        // Merge didn't throw but also didn't produce a clean result — check for conflict markers
+        await appendTx(dir, {
+          id: txId,
+          type: "merge",
+          status: "PENDING",
+          message: `MERGE_IN_PROGRESS: ${ref} <- ${theirRef} (pull)`,
+          startedAt: Date.now(),
+        });
+        const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+        if (conflictResult.mergeState.conflicts.length > 0) {
+          return conflictResult;
+        }
+      }
+
+      // Checkout to update the working directory
+      await git.checkout({ fs, dir, ref });
+      await completeTx(dir, txId);
+      await deleteGitCache(dir);
+      console.log(TAG, `pull COMPLETE -> ${repoId} (${ref})`);
+      return { clean: true };
     } catch (err) {
       await failTx(dir, txId);
-      console.error(TAG, `push FAILED â†’ ${repoId}`, err);
+      console.error(TAG, `pull FAILED -> ${repoId}`, err);
       throw err;
     }
   }
 
-  // â”€â”€ List â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // -- Remotes --------------------------------------------------------
+
+  async addRemote(
+    repoId: string,
+    remoteName: string,
+    url: string,
+  ): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+
+    // Remove existing remote with same name (if any) before adding
+    const existing = await git.listRemotes({ fs, dir });
+    if (existing.some((r) => r.remote === remoteName)) {
+      await git.deleteRemote({ fs, dir, remote: remoteName });
+    }
+
+    await git.addRemote({ fs, dir, remote: remoteName, url });
+    console.log(TAG, `addRemote(${repoId}) -> ${remoteName} = ${url}`);
+  }
+
+  async getRemotes(repoId: string): Promise<{ remote: string; url: string }[]> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    return git.listRemotes({ fs, dir });
+  }
+
+  // -- List -----------------------------------------------------------
   async listRepositories(): Promise<Repository[]> {
     await this.init();
     let entries: string[] = [];
@@ -296,8 +623,8 @@ export class GitEngine {
     console.log(
       TAG,
       `listRepositories â€“ scanning ${BASE_DIR}, found: [${entries.join(
-        ", "
-      )}]`
+        ", ",
+      )}]`,
     );
 
     for (const name of entries) {
@@ -313,7 +640,7 @@ export class GitEngine {
         console.warn(
           TAG,
           `listRepositories: buildRepository("${name}") failed`,
-          err
+          err,
         );
       }
     }
@@ -324,44 +651,76 @@ export class GitEngine {
 
   private async buildRepository(
     name: string,
-    dir: string
+    dir: string,
   ): Promise<Repository> {
-    const currentBranch =
-      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+    let currentBranch: string;
+    try {
+      currentBranch =
+        (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+    } catch {
+      // HEAD may point to a non-existent ref (empty repo or mismatched default branch)
+      currentBranch = "main";
+    }
+
     const branches = await git.listBranches({ fs, dir });
     const branchMeta: GitBranch[] = await Promise.all(
       branches.map(async (branch) => {
-        const head = (await git.log({ fs, dir, ref: branch, depth: 1 }))[0];
-        return {
-          name: branch,
-          isRemote: false,
-          isCurrent: branch === currentBranch,
-          lastCommitSha: head?.oid ?? "",
-          lastCommitMessage: head?.commit.message ?? "",
-          ahead: 0,
-          behind: 0,
-        };
-      })
+        try {
+          const head = (await git.log({ fs, dir, ref: branch, depth: 1 }))[0];
+          return {
+            name: branch,
+            isRemote: false,
+            isCurrent: branch === currentBranch,
+            lastCommitSha: head?.oid ?? "",
+            lastCommitMessage: head?.commit.message ?? "",
+            ahead: 0,
+            behind: 0,
+          };
+        } catch {
+          // Branch ref exists but has no commits yet
+          return {
+            name: branch,
+            isRemote: false,
+            isCurrent: branch === currentBranch,
+            lastCommitSha: "",
+            lastCommitMessage: "",
+            ahead: 0,
+            behind: 0,
+          };
+        }
+      }),
     );
 
-    const statusMatrix = await git.statusMatrix({ fs, dir });
+    let statusMatrix: [string, number, number, number][] = [];
+    try {
+      statusMatrix = await git.statusMatrix({ fs, dir });
+    } catch {
+      // Empty repo with no commits can't produce a status matrix
+    }
     const stagedCount = statusMatrix.filter(
-      ([, , , stage]) => stage === 2 || stage === 3
+      ([, , , stage]) => stage === 2 || stage === 3,
     ).length;
     const modifiedCount = statusMatrix.filter(
-      ([, , workdir, stage]) => workdir === 2 && stage !== 2
+      ([, , workdir, stage]) => workdir === 2 && stage !== 2,
     ).length;
     const conflictCount = statusMatrix.filter(
-      ([, , , stage]) => stage === 3
+      ([, , , stage]) => stage === 3,
     ).length;
 
-    const latestCommit = (await git.log({ fs, dir, depth: 1 }))[0];
+    let latestCommit: Awaited<ReturnType<typeof git.log>>[0] | undefined;
+    let commitCount = 0;
+    try {
+      const logs = await git.log({ fs, dir, depth: 50 });
+      latestCommit = logs[0];
+      commitCount = logs.length;
+    } catch {
+      // No commits yet
+    }
     const lastActivity = formatTimestamp(latestCommit?.commit.author.timestamp);
-    const commitCount = (await git.log({ fs, dir, depth: 50 })).length;
 
     console.log(
       TAG,
-      `buildRepo(${name}) â€“ branch=${currentBranch} commits=${commitCount} staged=${stagedCount} modified=${modifiedCount}`
+      `buildRepo(${name}) â€“ branch=${currentBranch} commits=${commitCount} staged=${stagedCount} modified=${modifiedCount}`,
     );
 
     return {
@@ -385,9 +744,16 @@ export class GitEngine {
     console.log(TAG, `getWorkingTree(${repoId})`);
     const statusMatrix = await git.statusMatrix({ fs, dir });
     const tracked = await git.listFiles({ fs, dir });
+
+    // Also scan the filesystem recursively to catch brand-new untracked files
+    const fsFiles = await this.listAllFiles(dir, '');
     const all = Array.from(
-      new Set([...tracked, ...statusMatrix.map(([filepath]) => filepath)])
-    );
+      new Set([
+        ...tracked,
+        ...statusMatrix.map(([filepath]) => filepath),
+        ...fsFiles,
+      ]),
+    ).filter(f => !f.startsWith('.git/') && f !== '.git');
 
     const tree: GitFile[] = [];
 
@@ -466,6 +832,35 @@ export class GitEngine {
     this.insertIntoTree(dirNode.children, rest, file);
   }
 
+  /**
+   * Recursively list all files under `dir`, returning paths relative to `dir`.
+   * Skips the .git directory.
+   */
+  private async listAllFiles(baseDir: string, prefix: string): Promise<string[]> {
+    const results: string[] = [];
+    let entries: string[] = [];
+    const target = prefix ? joinPath(baseDir, prefix) : baseDir;
+    try {
+      entries = await fs.promises.readdir(target);
+    } catch {
+      return results;
+    }
+    for (const entry of entries) {
+      if (entry === '.git') continue;
+      const relPath = prefix ? `${prefix}/${entry}` : entry;
+      const fullPath = joinPath(baseDir, relPath);
+      const stat = await fs.promises.stat(fullPath).catch(() => null);
+      if (!stat) continue;
+      if (stat.type === 'dir') {
+        const children = await this.listAllFiles(baseDir, relPath);
+        results.push(...children);
+      } else {
+        results.push(relPath);
+      }
+    }
+    return results;
+  }
+
   async getCommits(repoId: string): Promise<GitCommit[]> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
@@ -492,10 +887,7 @@ export class GitEngine {
   // Uses isomorphic-git tree walkers to read actual file content from the
   // object store — no working directory access required.
 
-  async getCommitDiff(
-    repoId: string,
-    sha: string
-  ): Promise<CommitDiffFile[]> {
+  async getCommitDiff(repoId: string, sha: string): Promise<CommitDiffFile[]> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
 
@@ -528,7 +920,12 @@ export class GitEngine {
           const type = await entry?.type();
           if (type !== "blob") return null;
           const newContent = await decode(entry);
-          results.push({ filepath, oldContent: "", newContent, changeType: "A" });
+          results.push({
+            filepath,
+            oldContent: "",
+            newContent,
+            changeType: "A",
+          });
           return null;
         },
       });
@@ -566,8 +963,11 @@ export class GitEngine {
           decode(currentEntry ?? null),
         ]);
 
-        const changeType: "M" | "A" | "D" =
-          !parentEntry ? "A" : !currentEntry ? "D" : "M";
+        const changeType: "M" | "A" | "D" = !parentEntry
+          ? "A"
+          : !currentEntry
+            ? "D"
+            : "M";
 
         return { filepath, oldContent, newContent, changeType };
       },
@@ -584,7 +984,7 @@ export class GitEngine {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
     try {
-      const url = await git.getConfig({ fs, dir, path: 'remote.origin.url' });
+      const url = await git.getConfig({ fs, dir, path: "remote.origin.url" });
       return (url as string | undefined) ?? null;
     } catch {
       return null;
@@ -593,7 +993,7 @@ export class GitEngine {
 
   async createRepository(
     name: string,
-    addReadme: boolean
+    addReadme: boolean,
   ): Promise<Repository> {
     await this.init();
     const safeName = name.trim().replace(/\s+/g, "-");
@@ -619,8 +1019,16 @@ export class GitEngine {
 
   async deleteRepository(id: string) {
     const dir = this.resolveRepoDir(id);
-    console.log(TAG, `deleteRepository(${id}) â†’ removing ${dir}`);
-    await removeDir(dir);
+    console.log(TAG, `deleteRepository(${id}) → removing ${dir}`);
+    try {
+      await removeDir(dir);
+      console.log(TAG, `deleteRepository(${id}) → removed successfully`);
+    } catch (err) {
+      console.error(TAG, `deleteRepository(${id}) → removeDir failed`, err);
+      throw new Error(
+        `Failed to delete repository "${id}": ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // â”€â”€ Stage / Unstage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -636,13 +1044,102 @@ export class GitEngine {
     console.log(TAG, `unstage ${filepath} in ${repoId}`);
     await git.resetIndex({ fs, dir, filepath });
   }
+  // ── Create / Delete files ─────────────────────────────────────────────────
 
+  async createFile(repoId: string, filepath: string, content: string = ''): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+
+    // Ensure parent directories exist
+    const segments = filepath.split('/');
+    if (segments.length > 1) {
+      const parentDir = joinPath(dir, ...segments.slice(0, -1));
+      await ensureDirDeep(parentDir);
+    }
+
+    await fs.promises.writeFile(fullPath, content, 'utf8');
+    await deleteGitCache(dir);
+    console.log(TAG, `createFile(${repoId}) → ${filepath}`);
+  }
+
+  async deleteFile(repoId: string, filepath: string): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+
+    // Remove from git index first
+    try {
+      await git.remove({ fs, dir, filepath });
+    } catch {
+      // Not tracked — that's fine
+    }
+
+    // Remove from filesystem
+    try {
+      const stat = await fs.promises.stat(fullPath);
+      if (stat.type === 'dir') {
+        await removeDir(fullPath);
+      } else {
+        await fs.promises.unlink(fullPath);
+      }
+    } catch {
+      // File might already be gone
+    }
+
+    await deleteGitCache(dir);
+    console.log(TAG, `deleteFile(${repoId}) → ${filepath}`);
+  }
+
+  /**
+   * Save (overwrite) file content on disk without committing.
+   */
+  async saveFile(repoId: string, filepath: string, content: string): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+    await fs.promises.writeFile(fullPath, content, 'utf8');
+    await deleteGitCache(dir);
+    console.log(TAG, `saveFile(${repoId}) → ${filepath}`);
+  }
+
+  /**
+   * Revert a file to the version in the last commit (HEAD).
+   * Also resets the index entry so it doesn't show as staged.
+   */
+  async revertFile(repoId: string, filepath: string): Promise<void> {
+    await this.init();
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+
+    try {
+      // Read the file content from HEAD
+      const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+      const { blob } = await git.readBlob({ fs, dir, oid: headOid, filepath });
+      const originalContent = new TextDecoder().decode(blob);
+      await fs.promises.writeFile(fullPath, originalContent, 'utf8');
+      // Also restore the index
+      await git.resetIndex({ fs, dir, filepath });
+      await deleteGitCache(dir);
+      console.log(TAG, `revertFile(${repoId}) → ${filepath} restored from HEAD`);
+    } catch (err) {
+      // If the file doesn't exist in HEAD (new file), just delete it
+      try {
+        await fs.promises.unlink(fullPath);
+      } catch { /* already gone */ }
+      try {
+        await git.remove({ fs, dir, filepath });
+      } catch { /* not in index */ }
+      await deleteGitCache(dir);
+      console.log(TAG, `revertFile(${repoId}) → ${filepath} removed (not in HEAD)`);
+    }
+  }
   // â”€â”€ Commit (TX-wrapped + 3 s test delay) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   async commit(
     repoId: string,
     message: string,
-    author: { name: string; email: string }
+    author: { name: string; email: string },
   ) {
     const dir = this.resolveRepoDir(repoId);
     const txId = randomId();
@@ -663,7 +1160,7 @@ export class GitEngine {
       // â±  3-second intentional delay â€” kill app in this window to test recovery
       console.log(
         TAG,
-        `commit succeeded â€“ 3 s delay before COMPLETED (test crash-recovery)â€¦`
+        `commit succeeded â€“ 3 s delay before COMPLETED (test crash-recovery)â€¦`,
       );
       await new Promise((resolve) => setTimeout(resolve, 3000));
 
@@ -713,37 +1210,461 @@ export class GitEngine {
   }
 
   // â”€â”€ Merge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Merge (conflict-aware) ───────────────────────────────────────────
 
+  /**
+   * Merge result: either clean merge or conflict state
+   */
   async merge(
     repoId: string,
     theirBranch: string,
-    author: { name: string; email: string }
-  ) {
+    author: { name: string; email: string },
+  ): Promise<{ clean: true } | { clean: false; mergeState: MergeState }> {
     const dir = this.resolveRepoDir(repoId);
     const txId = randomId();
 
+    const current =
+      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+
+    // Log MERGE_IN_PROGRESS for crash recovery
     await appendTx(dir, {
       id: txId,
       type: "merge",
       status: "PENDING",
-      message: `merge ${theirBranch}`,
+      message: `MERGE_IN_PROGRESS: ${current} <- ${theirBranch}`,
       startedAt: Date.now(),
     });
-    console.log(TAG, `merge PENDING (txId=${txId}) â€“ merging ${theirBranch}`);
+    console.log(TAG, `merge PENDING (txId=${txId}) — merging ${theirBranch} into ${current}`);
 
     try {
-      const current =
-        (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
-      await git.merge({ fs, dir, ours: current, theirs: theirBranch, author });
-      await completeTx(dir, txId);
-      await deleteGitCache(dir);
-      console.log(TAG, `merge COMPLETED (txId=${txId})`);
-    } catch (err) {
+      const result = await git.merge({
+        fs,
+        dir,
+        ours: current,
+        theirs: theirBranch,
+        author,
+        abortOnConflict: false,
+      });
+
+      // Fast-forward or auto-merge succeeded
+      if (result.oid && !result.alreadyMerged) {
+        await git.checkout({ fs, dir, ref: current });
+        await completeTx(dir, txId);
+        await deleteGitCache(dir);
+        console.log(TAG, `merge COMPLETED cleanly (txId=${txId})`);
+        return { clean: true };
+      }
+
+      if (result.alreadyMerged) {
+        await completeTx(dir, txId);
+        console.log(TAG, `merge: already up-to-date (txId=${txId})`);
+        return { clean: true };
+      }
+
+      return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
+    } catch (err: any) {
+      const isConflict =
+        err?.code === 'MergeConflictError' ||
+        err?.code === 'MergeNotSupportedError' ||
+        (err?.message && err.message.includes('onflict'));
+      const isUnmerged =
+        err?.code === 'UnmergedPathsError' ||
+        (err?.message && err.message.includes('nmerged'));
+
+      if (isConflict) {
+        console.log(TAG, `merge detected conflicts — entering resolution mode`);
+        return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
+      }
+
+      if (isUnmerged) {
+        // Leftover unmerged entries — force-checkout to clean, then retry
+        console.warn(TAG, `merge hit UnmergedPathsError — cleaning up & retrying`);
+        try {
+          await git.checkout({ fs, dir, ref: current, force: true });
+          try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_HEAD')); } catch {}
+          try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_MSG')); } catch {}
+
+          const retryResult = await git.merge({
+            fs, dir, ours: current, theirs: theirBranch,
+            author, abortOnConflict: false,
+          });
+          if (retryResult.oid && !retryResult.alreadyMerged) {
+            await git.checkout({ fs, dir, ref: current });
+            await completeTx(dir, txId);
+            await deleteGitCache(dir);
+            console.log(TAG, `merge COMPLETED cleanly after cleanup (txId=${txId})`);
+            return { clean: true };
+          }
+          if (retryResult.alreadyMerged) {
+            await completeTx(dir, txId);
+            return { clean: true };
+          }
+          return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
+        } catch (cleanupErr: any) {
+          const isRetryConflict =
+            cleanupErr?.code === 'MergeConflictError' ||
+            cleanupErr?.code === 'MergeNotSupportedError' ||
+            (cleanupErr?.message && cleanupErr.message.includes('onflict'));
+          if (isRetryConflict) {
+            return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
+          }
+          await failTx(dir, txId);
+          console.error(TAG, `merge cleanup retry FAILED (txId=${txId})`, cleanupErr);
+          throw cleanupErr;
+        }
+      }
+
       await failTx(dir, txId);
       console.error(TAG, `merge FAILED (txId=${txId})`, err);
       throw err;
     }
   }
+
+  /**
+   * Detect conflicted files and build the MergeState for the UI.
+   */
+  private async handleMergeConflicts(
+    dir: string,
+    repoId: string,
+    oursBranch: string,
+    theirsBranch: string,
+    txId: string,
+  ): Promise<{ clean: false; mergeState: MergeState }> {
+    let statusMatrix: [string, number, number, number][] = [];
+    try {
+      statusMatrix = await git.statusMatrix({ fs, dir });
+    } catch { /* fallback */ }
+
+    const conflictedPaths: string[] = [];
+
+    for (const [filepath, head, workdir, stage] of statusMatrix) {
+      if (filepath.startsWith('.git/') || filepath === '.git') continue;
+      if (stage === 3 || (workdir === 2 && head === 1)) {
+        const fullPath = joinPath(dir, filepath);
+        try {
+          const content = (await fs.promises.readFile(fullPath, 'utf8')) as string;
+          if (content.includes('<<<<<<<') && content.includes('>>>>>>>')) {
+            conflictedPaths.push(filepath);
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    if (conflictedPaths.length === 0) {
+      for (const [filepath, , workdir] of statusMatrix) {
+        if (filepath.startsWith('.git/')) continue;
+        if (workdir === 2) {
+          const fullPath = joinPath(dir, filepath);
+          try {
+            const content = (await fs.promises.readFile(fullPath, 'utf8')) as string;
+            if (content.includes('<<<<<<<') && content.includes('>>>>>>>')) {
+              conflictedPaths.push(filepath);
+            }
+          } catch { /* skip */ }
+        }
+      }
+    }
+
+    const conflicts: ConflictFile[] = [];
+    for (const filepath of conflictedPaths) {
+      const fullPath = joinPath(dir, filepath);
+      const rawContent = (await fs.promises.readFile(fullPath, 'utf8')) as string;
+
+      let oursContent = '';
+      try {
+        const oursOid = await git.resolveRef({ fs, dir, ref: oursBranch });
+        const { blob } = await git.readBlob({ fs, dir, oid: oursOid, filepath });
+        oursContent = new TextDecoder().decode(blob);
+      } catch { oursContent = ''; }
+
+      let theirsContent = '';
+      try {
+        const theirsOid = await git.resolveRef({ fs, dir, ref: theirsBranch });
+        const { blob } = await git.readBlob({ fs, dir, oid: theirsOid, filepath });
+        theirsContent = new TextDecoder().decode(blob);
+      } catch { theirsContent = ''; }
+
+      let baseContent = '';
+      try {
+        const oursOid = await git.resolveRef({ fs, dir, ref: oursBranch });
+        const theirsOid = await git.resolveRef({ fs, dir, ref: theirsBranch });
+        const [baseOid] = await git.findMergeBase({ fs, dir, oids: [oursOid, theirsOid] });
+        if (baseOid) {
+          const { blob } = await git.readBlob({ fs, dir, oid: baseOid, filepath });
+          baseContent = new TextDecoder().decode(blob);
+        }
+      } catch { baseContent = ''; }
+
+      const hunks = this.parseConflictHunks(rawContent);
+      const fileName = filepath.split('/').pop() ?? filepath;
+
+      conflicts.push({
+        id: `conflict-${filepath}`,
+        path: filepath,
+        name: fileName,
+        conflictCount: hunks.length,
+        resolved: false,
+        oursContent,
+        theirsContent,
+        baseContent,
+        resultContent: '',
+        oursBranch,
+        theirsBranch,
+        hunks,
+      });
+    }
+
+    const mergeState: MergeState = {
+      inProgress: true,
+      repoId,
+      oursBranch,
+      theirsBranch,
+      conflicts,
+      txId,
+    };
+
+    console.log(TAG, `merge conflicts: ${conflicts.length} files, ${conflicts.reduce((s, c) => s + c.hunks.length, 0)} hunks`);
+    return { clean: false, mergeState };
+  }
+
+  /**
+   * Parse Git conflict markers from a file into structured hunks.
+   */
+  private parseConflictHunks(rawContent: string): ConflictHunk[] {
+    const hunks: ConflictHunk[] = [];
+    const lines = rawContent.split('\n');
+    let i = 0;
+    let hunkIndex = 0;
+
+    while (i < lines.length) {
+      if (lines[i].startsWith('<<<<<<<')) {
+        const oursLines: string[] = [];
+        const baseLines: string[] = [];
+        const theirsLines: string[] = [];
+        let phase: 'ours' | 'base' | 'theirs' = 'ours';
+        i++;
+
+        while (i < lines.length && !lines[i].startsWith('>>>>>>>')) {
+          if (lines[i].startsWith('|||||||')) { phase = 'base'; i++; continue; }
+          if (lines[i].startsWith('=======')) { phase = 'theirs'; i++; continue; }
+          if (phase === 'ours') oursLines.push(lines[i]);
+          else if (phase === 'base') baseLines.push(lines[i]);
+          else theirsLines.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) i++;
+
+        hunks.push({
+          id: `hunk-${hunkIndex++}`,
+          oursContent: oursLines.join('\n'),
+          baseContent: baseLines.join('\n'),
+          theirsContent: theirsLines.join('\n'),
+          resolved: false,
+          resolution: null,
+          resultContent: '',
+        });
+      } else {
+        i++;
+      }
+    }
+    return hunks;
+  }
+
+  /**
+   * Clear unmerged (multi-stage) entries from the git index for given files.
+   * isomorphic-git's git.add() does NOT remove stage 1/2/3 entries — we must
+   * git.remove() first so the subsequent git.add() writes a clean stage-0.
+   */
+  private async clearUnmergedEntries(dir: string, filepaths: string[]): Promise<void> {
+    for (const filepath of filepaths) {
+      try {
+        await git.remove({ fs, dir, filepath });
+        console.log(TAG, `clearUnmergedEntries → removed index entries for ${filepath}`);
+      } catch (rmErr) {
+        console.warn(TAG, `clearUnmergedEntries → git.remove failed for ${filepath}`, rmErr);
+      }
+    }
+  }
+
+  /**
+   * Stage a resolved conflict file.
+   */
+  async stageResolvedFile(repoId: string, filepath: string, resolvedContent: string): Promise<void> {
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+    await fs.promises.writeFile(fullPath, resolvedContent, 'utf8');
+    // Must remove first to clear any multi-stage (unmerged) index entries
+    await this.clearUnmergedEntries(dir, [filepath]);
+    await git.add({ fs, dir, filepath });
+    console.log(TAG, `stageResolvedFile(${repoId}) → ${filepath}`);
+  }
+
+  /**
+   * Finalize a merge after all conflicts are resolved.
+   * Stages any remaining unmerged files before committing.
+   */
+  async finalizeMerge(
+    repoId: string,
+    theirBranch: string,
+    author: { name: string; email: string },
+    txId: string,
+    resolvedFiles?: { path: string; hunks: ConflictHunk[] }[],
+  ): Promise<void> {
+    const dir = this.resolveRepoDir(repoId);
+    const current =
+      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+
+    // ── 1. Capture merge parent oids BEFORE we touch the index ──
+    const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+    let theirOid: string | null = null;
+    try {
+      theirOid = await git.resolveRef({ fs, dir, ref: theirBranch });
+    } catch {
+      // Fallback: read .git/MERGE_HEAD written by git.merge({ abortOnConflict:false })
+      try {
+        const raw = (await fs.promises.readFile(
+          joinPath(dir, '.git', 'MERGE_HEAD'), 'utf8'
+        )) as string;
+        theirOid = raw.trim();
+      } catch { /* no MERGE_HEAD — single-parent commit */ }
+    }
+    console.log(TAG, `finalizeMerge → HEAD=${headOid.slice(0,8)}, theirs=${theirOid?.slice(0,8) ?? 'none'}`);
+
+    // ── 2. Build resolved content for each conflicted file IN MEMORY ──
+    const resolvedContents: { path: string; content: string }[] = [];
+    if (resolvedFiles && resolvedFiles.length > 0) {
+      for (const file of resolvedFiles) {
+        const fullPath = joinPath(dir, file.path);
+        try {
+          const rawContent = (await fs.promises.readFile(fullPath, 'utf8')) as string;
+          const content = this.buildResolvedContent(rawContent, file.hunks);
+          resolvedContents.push({ path: file.path, content });
+        } catch (err) {
+          console.warn(TAG, `finalizeMerge → failed to read ${file.path}`, err);
+        }
+      }
+    }
+
+    // ── 3. Force-checkout to clear ALL unmerged (multi-stage) index entries ──
+    //    isomorphic-git's git.add() does NOT remove stage 1/2/3 entries,
+    //    so git.commit() always fails with UnmergedPathsError.
+    //    A force-checkout resets the index & working-tree to HEAD.
+    console.log(TAG, `finalizeMerge → force checkout "${current}" to clear unmerged index`);
+    await git.checkout({ fs, dir, ref: current, force: true });
+
+    // ── 4. Write resolved content back to disk (overwrites the clean checkout) ──
+    for (const { path, content } of resolvedContents) {
+      const fullPath = joinPath(dir, path);
+      await fs.promises.writeFile(fullPath, content, 'utf8');
+      console.log(TAG, `finalizeMerge → wrote resolved ${path} (${content.length} chars)`);
+    }
+
+    // ── 5. Stage every resolved file (index is now clean — no multi-stage) ──
+    for (const { path } of resolvedContents) {
+      await git.add({ fs, dir, filepath: path });
+      console.log(TAG, `finalizeMerge → staged ${path}`);
+    }
+
+    // ── 6. Commit as a merge commit with both parents ──
+    const message = `Merge branch '${theirBranch}' into ${current}`;
+    const parents = theirOid ? [headOid, theirOid] : [headOid];
+    await git.commit({
+      fs, dir, message, author, committer: author,
+      parent: parents,
+    });
+
+    // ── 7. Clean up leftover merge-state files ──
+    try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_HEAD')); } catch {}
+    try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_MSG')); } catch {}
+
+    await completeTx(dir, txId);
+    await deleteGitCache(dir);
+    console.log(TAG, `finalizeMerge COMPLETED — merged ${theirBranch} into ${current} (parents: ${parents.map(p => p.slice(0,8)).join(', ')})`);
+  }
+
+  /**
+   * Abort an in-progress merge.
+   */
+  async abortMerge(repoId: string, txId: string): Promise<void> {
+    const dir = this.resolveRepoDir(repoId);
+    const current =
+      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+    await git.checkout({ fs, dir, ref: current, force: true });
+    await failTx(dir, txId);
+    await deleteGitCache(dir);
+    console.log(TAG, `abortMerge — restored ${current}`);
+  }
+
+  /**
+   * Read a file content from a specific branch ref.
+   */
+  async readFileAtRef(repoId: string, filepath: string, ref: string): Promise<string> {
+    const dir = this.resolveRepoDir(repoId);
+    try {
+      const oid = await git.resolveRef({ fs, dir, ref });
+      const { blob } = await git.readBlob({ fs, dir, oid, filepath });
+      return new TextDecoder().decode(blob);
+    } catch { return ''; }
+  }
+
+  /**
+   * Check if a repo has a pending MERGE_IN_PROGRESS transaction.
+   */
+  async getPendingMerge(repoId: string): Promise<TransactionEntry | null> {
+    const dir = this.resolveRepoDir(repoId);
+    const txList = await readTransactions(dir);
+    return txList.find(
+      (e) => e.status === 'PENDING' && e.message?.startsWith('MERGE_IN_PROGRESS')
+    ) ?? null;
+  }
+
+  /**
+   * Rebuild a file from its content with conflict markers, applying resolutions.
+   */
+  buildResolvedContent(rawContent: string, hunks: ConflictHunk[]): string {
+    // If no conflict markers in the file, return as-is
+    if (!rawContent.includes('<<<<<<<') || !rawContent.includes('>>>>>>>')) {
+      console.log(TAG, 'buildResolvedContent → no conflict markers found, returning as-is');
+      return rawContent;
+    }
+
+    const lines = rawContent.split('\n');
+    const result: string[] = [];
+    let lineIdx = 0;
+    let hunkIdx = 0;
+
+    while (lineIdx < lines.length) {
+      if (lines[lineIdx].startsWith('<<<<<<<') && hunkIdx < hunks.length) {
+        const hunk = hunks[hunkIdx++];
+        // Skip everything between <<<<<<< and >>>>>>>
+        while (lineIdx < lines.length && !lines[lineIdx].startsWith('>>>>>>>')) {
+          lineIdx++;
+        }
+        if (lineIdx < lines.length) lineIdx++; // skip the >>>>>>> line
+
+        // Insert the resolved content (may be multi-line)
+        if (hunk.resultContent) {
+          result.push(hunk.resultContent);
+        }
+      } else {
+        result.push(lines[lineIdx]);
+        lineIdx++;
+      }
+    }
+
+    const output = result.join('\n');
+
+    // Safety check: verify no conflict markers remain
+    if (output.includes('<<<<<<<') || output.includes('>>>>>>>')) {
+      console.warn(TAG, 'buildResolvedContent → WARNING: conflict markers still present after resolution!');
+      console.warn(TAG, `  hunks provided: ${hunks.length}, hunks consumed: ${hunkIdx}`);
+    } else {
+      console.log(TAG, `buildResolvedContent → clean output (${output.length} chars, ${hunkIdx} hunks resolved)`);
+    }
+
+    return output;
+  }
+
 
   // â”€â”€ Recovery: find PENDING transactions across all repos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -768,12 +1689,42 @@ export class GitEngine {
       const txList = await readTransactions(dir);
       const pending = txList.filter((e) => e.status === "PENDING");
       if (pending.length > 0) {
-        console.warn(
-          TAG,
-          `âš  PENDING transactions in ${name}:`,
-          pending.map((p) => `${p.type}(${p.id})`).join(", ")
-        );
-        results.push({ repoId: name, dir, entries: pending });
+        // Auto-expire PENDING transactions older than 5 minutes
+        const STALE_MS = 5 * 60 * 1000;
+        const now = Date.now();
+        let hasStale = false;
+        for (const p of pending) {
+          if (now - p.startedAt > STALE_MS) {
+            hasStale = true;
+            break;
+          }
+        }
+        if (hasStale) {
+          const updated = txList.map((e) =>
+            e.status === "PENDING" && now - e.startedAt > STALE_MS
+              ? { ...e, status: "FAILED" as const, completedAt: now }
+              : e,
+          );
+          await writeTransactions(dir, updated);
+          const remaining = updated.filter((e) => e.status === "PENDING");
+          if (remaining.length > 0) {
+            console.warn(
+              TAG,
+              `\u26A0 PENDING transactions in ${name}:`,
+              remaining.map((p) => `${p.type}(${p.id})`).join(", "),
+            );
+            results.push({ repoId: name, dir, entries: remaining });
+          } else {
+            console.log(TAG, `Auto-expired stale transactions in ${name}`);
+          }
+        } else {
+          console.warn(
+            TAG,
+            `\u26A0 PENDING transactions in ${name}:`,
+            pending.map((p) => `${p.type}(${p.id})`).join(", "),
+          );
+          results.push({ repoId: name, dir, entries: pending });
+        }
       }
     }
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { useRouter } from 'expo-router';
 import { gitEngine, TransactionEntry } from '@/services/git/engine';
 import Colors from '@/constants/colors';
 
@@ -10,9 +11,12 @@ interface PendingGroup {
 }
 
 export default function RecoveryAlert() {
+  const router = useRouter();
   const [pending, setPending] = useState<PendingGroup[]>([]);
   const [dismissed, setDismissed] = useState(false);
   const [checking, setChecking] = useState(true);
+  const [hasPendingMerge, setHasPendingMerge] = useState(false);
+  const [mergeRepoId, setMergeRepoId] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -22,6 +26,18 @@ export default function RecoveryAlert() {
         const results = await gitEngine.getPendingTransactions();
         if (mounted) {
           setPending(results);
+          // Check specifically for pending merge operations
+          for (const group of results) {
+            const mergeTx = group.entries.find(
+              (e) => e.message?.startsWith('MERGE_IN_PROGRESS')
+            );
+            if (mergeTx) {
+              setHasPendingMerge(true);
+              setMergeRepoId(group.repoId);
+              console.log('[RecoveryAlert] Found pending MERGE in', group.repoId);
+              break;
+            }
+          }
           console.log('[RecoveryAlert]', results.length > 0
             ? `Found ${results.reduce((s, r) => s + r.entries.length, 0)} PENDING tx(s)`
             : 'No pending transactions ✓');
@@ -44,10 +60,14 @@ export default function RecoveryAlert() {
       <View style={styles.inner}>
         <Text style={styles.icon}>⚠️</Text>
         <View style={styles.text}>
-          <Text style={styles.title}>Interrupted Operations Detected</Text>
+          <Text style={styles.title}>
+            {hasPendingMerge ? 'Merge In Progress' : 'Interrupted Operations Detected'}
+          </Text>
           <Text style={styles.subtitle}>
-            {totalPending} operation{totalPending > 1 ? 's' : ''} did not complete in{' '}
-            {pending.map(p => p.repoId).join(', ')}
+            {hasPendingMerge
+              ? `A merge was interrupted in ${mergeRepoId}. Resume to avoid data loss.`
+              : `${totalPending} operation${totalPending > 1 ? 's' : ''} did not complete in ${pending.map(p => p.repoId).join(', ')}`
+            }
           </Text>
           {pending.map(group =>
             group.entries.map(entry => (
@@ -55,6 +75,18 @@ export default function RecoveryAlert() {
                 • {entry.type}: {entry.message ?? '(no message)'}
               </Text>
             )),
+          )}
+
+          {hasPendingMerge && (
+            <TouchableOpacity
+              style={styles.resumeBtn}
+              onPress={() => {
+                setDismissed(true);
+                router.push('/merge-conflicts');
+              }}
+            >
+              <Text style={styles.resumeBtnText}>Resume Merge Resolution →</Text>
+            </TouchableOpacity>
           )}
         </View>
         <TouchableOpacity onPress={() => setDismissed(true)} style={styles.dismiss}>
@@ -100,6 +132,19 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: 11,
     marginLeft: 4,
+  },
+  resumeBtn: {
+    marginTop: 8,
+    backgroundColor: '#ff9500',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  resumeBtnText: {
+    color: '#000',
+    fontSize: 13,
+    fontWeight: '700',
   },
   dismiss: {
     padding: 4,

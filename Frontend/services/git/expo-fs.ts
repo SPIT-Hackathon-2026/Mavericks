@@ -57,6 +57,48 @@ class StatResult {
   }
 }
 
+// ── Recursive‑delete helper (fallback when Directory.delete() fails) ────────
+
+async function recursiveDelete(posixPath: string): Promise<void> {
+  const uri = toUri(posixPath);
+
+  // Check if it's a file
+  const f = new File(uri);
+  if (f.exists) {
+    try { f.delete(); } catch (e) {
+      console.warn(TAG, `recursiveDelete: failed to delete file '${posixPath}'`, e);
+    }
+    return;
+  }
+
+  // It's a directory – delete children first
+  const d = new Directory(uri);
+  if (!d.exists) return;
+
+  let items: { name: string }[] = [];
+  try {
+    items = d.list();
+  } catch {
+    // Can't list – try force‑delete again
+    try { d.delete(); } catch { /* ignore */ }
+    return;
+  }
+
+  for (const item of items) {
+    const childPath = posixPath.endsWith('/')
+      ? posixPath + item.name
+      : posixPath + '/' + item.name;
+    await recursiveDelete(childPath);
+  }
+
+  // Now the directory should be empty — remove it
+  try {
+    d.delete();
+  } catch (e) {
+    console.warn(TAG, `recursiveDelete: could not remove dir '${posixPath}' after clearing`, e);
+  }
+}
+
 // ── The promises-based fs object ────────────────────────────────────
 
 const promises = {
@@ -139,9 +181,19 @@ const promises = {
   async rmdir(filepath: string): Promise<void> {
     const uri = toUri(filepath);
     const d = new Directory(uri);
-    if (d.exists) {
-      d.delete(); // also deletes contents
+    if (!d.exists) return;
+
+    // Try direct delete first
+    try {
+      d.delete();
+      return;
+    } catch {
+      // Direct delete failed — fall back to recursive manual deletion
+      console.warn(TAG, `rmdir: direct delete failed for '${filepath}', trying recursive deletion`);
     }
+
+    // Recursively delete contents first, then the empty directory
+    await recursiveDelete(filepath);
   },
 
   async stat(filepath: string): Promise<StatResult> {

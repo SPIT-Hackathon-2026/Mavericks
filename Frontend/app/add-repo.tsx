@@ -8,6 +8,7 @@ import React, { useCallback, useState } from "react";
 import {
     ActivityIndicator,
     Platform,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -32,6 +33,7 @@ export default function AddRepoModal() {
   const [importName, setImportName] = useState("");
   const [cloning, setCloning] = useState(false);
   const [search, setSearch] = useState("");
+  const [cloningRepoId, setCloningRepoId] = useState<number | null>(null);
 
   const handleStartImport = useCallback(async () => {
     if (!importUrl.trim() || !importName.trim() || cloning) return;
@@ -68,7 +70,7 @@ export default function AddRepoModal() {
         <View style={{ width: 44 }} />
       </View>
 
-      <View style={styles.content}>
+      <ScrollView style={styles.content} contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
         <TouchableOpacity
           style={styles.optionCard}
           onPress={handleCreate}
@@ -195,17 +197,39 @@ export default function AddRepoModal() {
                     {r.full_name}
                   </Text>
                   <TouchableOpacity
-                    style={styles.ghCloneBtn}
-                    onPress={() => cloneGitHubRepo(r)}
+                    style={[
+                      styles.ghCloneBtn,
+                      cloningRepoId === r.id && { opacity: 0.6 },
+                    ]}
+                    onPress={async () => {
+                      if (cloningRepoId !== null) return;
+                      setCloningRepoId(r.id);
+                      try {
+                        await cloneGitHubRepo(r);
+                        if (Platform.OS !== 'web') {
+                          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                        }
+                      } catch {} finally {
+                        setCloningRepoId(null);
+                      }
+                    }}
                     activeOpacity={0.7}
+                    disabled={cloningRepoId !== null}
                   >
-                    <Text style={styles.ghCloneText}>Clone</Text>
+                    {cloningRepoId === r.id ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <ActivityIndicator size="small" color={Colors.accentPrimary} />
+                        <Text style={styles.ghCloneText}>Cloning…</Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.ghCloneText}>Clone</Text>
+                    )}
                   </TouchableOpacity>
                 </View>
               ))}
           </View>
         )}
-      </View>
+      </ScrollView>
     </View>
   );
 }
