@@ -1,31 +1,45 @@
 /**
- * P2P Transfer Screen
+ * P2P Transfer Screen  —  GitLane to GitLane
  *
- * Send mode:  Select repo → Select commits → Generate QR → Wait → Transfer complete
- * Receive mode: Scan QR → Connect → View diff → Accept / Reject
+ * Transfer methods (all offline unless noted):
  *
- * Transport layer: AsyncStorage relay (same-device demo).
- * For real multi-device, swap p2pService storeSession/getSession
- * with a WebSocket or TCP socket driver — no UI code changes needed.
+ *  1. Direct QR  – Animated QR codes, camera-to-camera.
+ *                  100% offline. No WiFi, internet or native modules.
+ *                  THE primary GitLane→GitLane path.
+ *
+ *  2. File Share – write a .gitlanepatch to device cache, open OS share sheet
+ *                  (AirDrop / Nearby Share / Bluetooth). Offline.
+ *                  Receiver: document picker → import.
+ *
+ *  3. WebSocket Relay – WebSocket relay via PieSocket + QR session pairing.
+ *                  Requires internet but works across any network.
+ *
+ * All three methods share the same commit-selection UI and DiffViewer.
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Animated,
+  Animated as RNAnimated,
   Platform,
   Alert,
   ActivityIndicator,
+  TextInput,
+  Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  Send,
-  Wifi,
-  QrCode,
+  Share2,
   FolderGit2,
   CheckCircle,
   Smartphone,
@@ -34,10 +48,19 @@ import {
   ChevronRight,
   XCircle,
   ArrowLeft,
-  ScanLine,
+  FileDown,
   Check,
+  Wifi,
+  QrCode,
+  ScanLine,
+  Radio,
+  Copy,
+  Play,
+  Pause,
+  Info,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import * as Clipboard from 'expo-clipboard';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import QRCode from 'react-native-qrcode-svg';
 import Colors from '@/constants/colors';
@@ -48,21 +71,58 @@ import GlowButton from '@/components/GlowButton';
 import DiffViewer from '@/components/DiffViewer';
 import { gitEngine } from '@/services/git/engine';
 import {
-  createSenderSession,
-  getSession,
-  updateSessionState,
-  decodeQRPayload,
-  buildRealDiffFiles,
+  sharePatch,
+  importPatch,
+  deletePatchFile,
+  buildLocalDiffFiles,
+  generateSessionToken,
+  getDeviceIP,
+  startSenderSession,
+  joinReceiverSession,
+  extractToken,
+  buildQRFrames,
+  parseQRFrame,
+  createScanState,
+  feedFrame,
+  missingFrames,
+  isComplete,
+  assemblePayload,
+  estimateTransferSeconds,
+  QR_FRAME_INTERVAL_MS,
 } from '@/services/p2p/p2pService';
-import type { P2PSession, QRPayload, DiffFile } from '@/services/p2p/p2pService';
+import type {
+  PatchPayload,
+  SenderSession,
+  ReceiverSession,
+  LiveStatus,
+  LiveProgress,
+  QRScanState,
+} from '@/services/p2p/p2pService';
 import type { GitCommit } from '@/types/git';
 
-// ─── Step types ───────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-type SendStep = 'select-repo' | 'select-commits' | 'qr-ready' | 'complete';
-type ReceiveStep = 'scanner' | 'connecting' | 'review-diff' | 'accepted';
+const { width: SCREEN_W } = Dimensions.get('window');
+const QR_SIZE = Math.min(SCREEN_W - 64, 280);
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type TransferMethod = 'qr' | 'file' | 'relay';
+type SendStep =
+  | 'select-repo'
+  | 'select-commits'
+  | 'building'
+  | 'qr-display'
+  | 'file-complete';
+type ReceiveStep =
+  | 'idle'
+  | 'scanning'
+  | 'importing'
+  | 'relay-receiving'
+  | 'review-diff'
+  | 'accepted';
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function haptic(style: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle.Medium) {
   if (Platform.OS !== 'web') Haptics.impactAsync(style);
@@ -70,23 +130,28 @@ function haptic(style: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function PulseRing() {
-  const anim = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(anim, { toValue: 1, duration: 2000, useNativeDriver: true }),
-        Animated.timing(anim, { toValue: 0, duration: 0, useNativeDriver: true }),
-      ])
-    ).start();
-  }, []);
-  const scale = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.3] });
-  const opacity = anim.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0.6, 0.2, 0] });
+function MethodChip({
+  label,
+  icon,
+  active,
+  onPress,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  onPress: () => void;
+}) {
   return (
-    <Animated.View
-      style={[styles.pulseRing, { transform: [{ scale }], opacity }]}
-      pointerEvents="none"
-    />
+    <TouchableOpacity
+      style={[styles.methodChipBtn, active && styles.methodChipBtnActive]}
+      onPress={onPress}
+      activeOpacity={0.75}
+    >
+      {icon}
+      <Text style={[styles.methodChipLabel, active && styles.methodChipLabelActive]}>
+        {label}
+      </Text>
+    </TouchableOpacity>
   );
 }
 
@@ -105,124 +170,97 @@ function CommitRow({
       onPress={onPress}
       activeOpacity={0.75}
     >
-      <GitCommitIcon size={16} color={selected ? Colors.accentPrimary : Colors.textMuted} />
+      <GitCommitIcon size={15} color={selected ? Colors.accentPrimary : Colors.textMuted} />
       <View style={styles.commitInfo}>
         <Text style={styles.commitMsg} numberOfLines={1}>{commit.message}</Text>
         <Text style={styles.commitMeta}>
           {commit.shortSha} · {commit.author} · {commit.date}
         </Text>
-        <View style={styles.commitStats}>
-          {commit.filesChanged > 0 && (
-            <Text style={styles.commitStatFiles}>{commit.filesChanged} files</Text>
-          )}
-          {commit.additions > 0 && (
-            <Text style={styles.commitStatAdd}>+{commit.additions}</Text>
-          )}
-          {commit.deletions > 0 && (
-            <Text style={styles.commitStatDel}>-{commit.deletions}</Text>
-          )}
-        </View>
+        {(commit.filesChanged > 0 || commit.additions > 0 || commit.deletions > 0) && (
+          <View style={styles.commitStats}>
+            {commit.filesChanged > 0 && (
+              <Text style={styles.statFiles}>{commit.filesChanged} files</Text>
+            )}
+            {commit.additions > 0 && (
+              <Text style={styles.statAdd}>+{commit.additions}</Text>
+            )}
+            {commit.deletions > 0 && (
+              <Text style={styles.statDel}>-{commit.deletions}</Text>
+            )}
+          </View>
+        )}
       </View>
       {selected ? (
-        <CheckCircle size={18} color={Colors.accentPrimary} />
+        <CheckCircle size={17} color={Colors.accentPrimary} />
       ) : (
-        <View style={styles.unselectedCircle} />
+        <View style={styles.unselCircle} />
       )}
     </TouchableOpacity>
   );
 }
 
-function TransferComplete({ session, onDone }: { session: P2PSession; onDone: () => void }) {
-  const scaleAnim = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 80 }).start();
-    haptic(Haptics.ImpactFeedbackStyle.Light);
-  }, []);
+function FrameDots({ total, received }: { total: number; received: Set<number> }) {
+  if (total === 0) return null;
+  const show = Math.min(total, 24);
   return (
-    <View style={styles.completeContainer}>
-      <Animated.View style={{ transform: [{ scale: scaleAnim }], marginBottom: Spacing.lg }}>
-        <CheckCircle size={64} color={Colors.accentPrimary} strokeWidth={1.5} />
-      </Animated.View>
-      <Text style={styles.completeTitle}>Transfer Complete</Text>
-      <Text style={styles.completeSubtitle}>
-        {session.diffFiles.length} file{session.diffFiles.length !== 1 ? 's' : ''} sent to receiver
-      </Text>
-      <View style={styles.completeMeta}>
-        <View style={styles.completeMetaRow}>
-          <Text style={styles.completeMetaLabel}>Repository</Text>
-          <Text style={styles.completeMetaValue}>{session.repoName}</Text>
-        </View>
-        <View style={styles.completeMetaRow}>
-          <Text style={styles.completeMetaLabel}>Session</Text>
-          <Text style={styles.completeMetaValue}>{session.sessionToken}</Text>
-        </View>
-      </View>
-      <View style={{ marginTop: Spacing.xl, width: '100%' }}>
-        <GlowButton title="Done" onPress={onDone} fullWidth />
-      </View>
+    <View style={styles.frameDots}>
+      {Array.from({ length: show }, (_, i) => (
+        <View
+          key={i}
+          style={[
+            styles.frameDot,
+            received.has(i) ? styles.frameDotDone : styles.frameDotPending,
+          ]}
+        />
+      ))}
+      {total > show && (
+        <Text style={styles.frameDotsMore}>+{total - show}</Text>
+      )}
     </View>
   );
 }
 
-function QRScanner({
-  onScanned,
-  onCancel,
+function DoneCard({
+  title,
+  subtitle,
+  meta,
+  onDone,
 }: {
-  onScanned: (data: string) => void;
-  onCancel: () => void;
+  title: string;
+  subtitle: string;
+  meta?: Array<{ label: string; value: string }>;
+  onDone: () => void;
 }) {
-  const [permission, requestPermission] = useCameraPermissions();
-  const scanned = useRef(false);
-
-  if (!permission) {
-    return (
-      <View style={styles.scannerContainer}>
-        <ActivityIndicator color={Colors.accentPrimary} />
-      </View>
-    );
-  }
-
-  if (!permission.granted) {
-    return (
-      <View style={styles.scannerContainer}>
-        <QrCode size={48} color={Colors.accentPrimary} strokeWidth={1} />
-        <Text style={styles.permissionText}>Camera access is needed to scan QR codes.</Text>
-        <View style={{ marginTop: Spacing.md }}>
-          <GlowButton title="Grant Camera Permission" onPress={requestPermission} />
-        </View>
-        <TouchableOpacity onPress={onCancel} style={{ marginTop: Spacing.md }}>
-          <Text style={styles.cancelLink}>Cancel</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
+  const scale = useRef(new RNAnimated.Value(0)).current;
+  useEffect(() => {
+    RNAnimated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+      tension: 70,
+      friction: 8,
+    }).start();
+    haptic(Haptics.ImpactFeedbackStyle.Light);
+  }, []);
   return (
-    <View style={styles.scannerWrapper}>
-      <CameraView
-        style={StyleSheet.absoluteFill}
-        barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-        onBarcodeScanned={({ data }) => {
-          if (!scanned.current) {
-            scanned.current = true;
-            haptic(Haptics.ImpactFeedbackStyle.Heavy);
-            onScanned(data);
-          }
-        }}
-      />
-      <View style={styles.scannerOverlay}>
-        <View style={styles.scannerCutout}>
-          <View style={[styles.corner, styles.topLeft]} />
-          <View style={[styles.corner, styles.topRight]} />
-          <View style={[styles.corner, styles.bottomLeft]} />
-          <View style={[styles.corner, styles.bottomRight]} />
+    <View style={styles.doneCard}>
+      <RNAnimated.View style={{ transform: [{ scale }], marginBottom: Spacing.lg }}>
+        <CheckCircle size={68} color={Colors.accentPrimary} strokeWidth={1.5} />
+      </RNAnimated.View>
+      <Text style={styles.doneTitle}>{title}</Text>
+      <Text style={styles.doneSub}>{subtitle}</Text>
+      {meta && meta.length > 0 && (
+        <View style={styles.doneMeta}>
+          {meta.map((row) => (
+            <View key={row.label} style={styles.doneMetaRow}>
+              <Text style={styles.doneMetaLabel}>{row.label}</Text>
+              <Text style={styles.doneMetaValue}>{row.value}</Text>
+            </View>
+          ))}
         </View>
-        <Text style={styles.scannerInstruction}>Align QR code within the frame</Text>
+      )}
+      <View style={{ marginTop: Spacing.xl, width: '100%' }}>
+        <GlowButton title="Done" onPress={onDone} fullWidth icon={<Check size={18} color="#fff" />} />
       </View>
-      <TouchableOpacity style={styles.scannerCancelBtn} onPress={onCancel}>
-        <ArrowLeft size={20} color={Colors.textPrimary} />
-        <Text style={styles.scannerCancelText}>Cancel</Text>
-      </TouchableOpacity>
     </View>
   );
 }
@@ -234,83 +272,91 @@ export default function TransferScreen() {
   const { repositories, settings } = useGit();
 
   const [mode, setMode] = useState(0);
+  const [method, setMethod] = useState<TransferMethod>('qr');
 
-  // Send state
+  // ── Send shared state ──
   const [sendStep, setSendStep] = useState<SendStep>('select-repo');
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [selectedCommits, setSelectedCommits] = useState<Set<string>>(new Set());
-  const [senderSession, setSenderSession] = useState<P2PSession | null>(null);
-  const [qrString, setQrString] = useState<string>('');
-  const [deviceIp, setDeviceIp] = useState<string>('');
-  const [isCreatingSession, setIsCreatingSession] = useState(false);
-
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  const startPolling = useCallback((token: string) => {
-    stopPolling();
-    pollRef.current = setInterval(async () => {
-      const session = await getSession(token);
-      if (session && session.state === 'complete') {
-        stopPolling();
-        setSenderSession(session);
-        setSendStep('complete');
-        haptic(Haptics.ImpactFeedbackStyle.Light);
-      }
-    }, 2000);
-  }, [stopPolling]);
-
-  useEffect(() => () => stopPolling(), [stopPolling]);
-
-  // Commit loading state for send flow
   const [repoCommits, setRepoCommits] = useState<GitCommit[]>([]);
   const [isLoadingCommits, setIsLoadingCommits] = useState(false);
 
+  // ── QR Send ──
+  const [qrFrames, setQrFrames] = useState<string[]>([]);
+  const [qrFrameIdx, setQrFrameIdx] = useState(0);
+  const [qrPaused, setQrPaused] = useState(false);
+  const [qrPayload, setQrPayload] = useState<PatchPayload | null>(null);
+  const qrTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── File Send ──
+  const [isSharing, setIsSharing] = useState(false);
+  const [sharedPayload, setSharedPayload] = useState<PatchPayload | null>(null);
+  const [patchFileUri, setPatchFileUri] = useState('');
+
+  // ── Relay Send ──
+  const senderSessionRef = useRef<SenderSession | null>(null);
+  const [liveToken, setLiveToken] = useState('');
+  const [liveQRData, setLiveQRData] = useState('');
+  const [liveSendStatus, setLiveSendStatus] = useState<LiveStatus>('connecting');
+  const [liveSendProgress, setLiveSendProgress] = useState<LiveProgress>({ sent: 0, total: 0 });
+
+  // ── Receive shared ──
+  const [receiveStep, setReceiveStep] = useState<ReceiveStep>('idle');
+  const [importedPayload, setImportedPayload] = useState<PatchPayload | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+
+  // ── QR Receive ──
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const scanStateRef = useRef<QRScanState>(createScanState());
+  const [scanReceived, setScanReceived] = useState(new Set<number>());
+  const [scanTotal, setScanTotal] = useState(0);
+  const scannedRef = useRef(false);
+
+  // ── Relay Receive ──
+  const receiverSessionRef = useRef<ReceiverSession | null>(null);
+  const [liveRecvStatus, setLiveRecvStatus] = useState<LiveStatus>('connecting');
+  const [liveRecvProgress, setLiveRecvProgress] = useState<LiveProgress>({ sent: 0, total: 0 });
+  const [tokenInput, setTokenInput] = useState('');
+
+  // ─── Effects ──────────────────────────────────────────────────────────────────
+
   useEffect(() => {
-    if (!selectedRepoId) {
-      setRepoCommits([]);
-      return;
-    }
+    if (!selectedRepoId) { setRepoCommits([]); return; }
     setIsLoadingCommits(true);
-    gitEngine
-      .getCommits(selectedRepoId)
+    gitEngine.getCommits(selectedRepoId)
       .then(setRepoCommits)
       .catch(() => setRepoCommits([]))
       .finally(() => setIsLoadingCommits(false));
   }, [selectedRepoId]);
 
-  // Receive state
-  const [receiveStep, setReceiveStep] = useState<ReceiveStep>('scanner');
-  const [scannedPayload, setScannedPayload] = useState<QRPayload | null>(null);
-  const [receivedDiff, setReceivedDiff] = useState<DiffFile[]>([]);
-  const [receiveSession, setReceiveSession] = useState<P2PSession | null>(null);
-  const [isComputingDiff, setIsComputingDiff] = useState(false);
-
-  const handleModeChange = (idx: number) => {
-    setMode(idx);
-    if (idx === 0) {
-      setSendStep('select-repo');
-      setSenderSession(null);
-      setQrString('');
-      setSelectedCommits(new Set());
-      setSelectedRepoId(null);
-    } else {
-      setReceiveStep('scanner');
-      setScannedPayload(null);
-      setReceivedDiff([]);
-      setReceiveSession(null);
-      setIsComputingDiff(false);
+  useEffect(() => {
+    if (sendStep !== 'qr-display' || method !== 'qr' || qrFrames.length === 0 || qrPaused) {
+      if (qrTimerRef.current) { clearInterval(qrTimerRef.current); qrTimerRef.current = null; }
+      return;
     }
-  };
+    qrTimerRef.current = setInterval(() => {
+      setQrFrameIdx((prev) => (prev + 1) % qrFrames.length);
+    }, QR_FRAME_INTERVAL_MS);
+    return () => { if (qrTimerRef.current) clearInterval(qrTimerRef.current); };
+  }, [sendStep, method, qrFrames.length, qrPaused]);
+
+  useEffect(() => () => {
+    if (patchFileUri) deletePatchFile(patchFileUri);
+    if (qrTimerRef.current) clearInterval(qrTimerRef.current);
+    senderSessionRef.current?.cancel();
+    receiverSessionRef.current?.cancel();
+  }, []);
+
+  // ─── Derived ─────────────────────────────────────────────────────────────────
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId);
-  const availableCommits = repoCommits;
+  const commitShas = useMemo(
+    () =>
+      selectedCommits.size > 0
+        ? Array.from(selectedCommits)
+        : repoCommits.slice(0, 20).map((c) => c.sha),
+    [selectedCommits, repoCommits],
+  );
 
   const toggleCommit = (sha: string) => {
     haptic(Haptics.ImpactFeedbackStyle.Light);
@@ -321,418 +367,783 @@ export default function TransferScreen() {
     });
   };
 
-  const handleGenerateQR = async () => {
+  // ─── Reset helpers ────────────────────────────────────────────────────────────
+
+  const resetSend = useCallback(() => {
+    setSendStep('select-repo');
+    setSelectedRepoId(null);
+    setSelectedCommits(new Set());
+    setQrFrames([]);
+    setQrFrameIdx(0);
+    setQrPaused(false);
+    setQrPayload(null);
+    setSharedPayload(null);
+    senderSessionRef.current?.cancel();
+    senderSessionRef.current = null;
+    setLiveToken('');
+    setLiveQRData('');
+  }, []);
+
+  const resetReceive = useCallback(() => {
+    setReceiveStep('idle');
+    setImportedPayload(null);
+    scanStateRef.current = createScanState();
+    setScanReceived(new Set());
+    setScanTotal(0);
+    scannedRef.current = false;
+    receiverSessionRef.current?.cancel();
+    receiverSessionRef.current = null;
+  }, []);
+
+  const handleModeChange = (idx: number) => {
+    setMode(idx);
+    if (idx === 0) resetSend(); else resetReceive();
+  };
+
+  // ─── QR Send ─────────────────────────────────────────────────────────────────
+
+  const handleBuildQR = async () => {
     if (!selectedRepo) return;
-    setIsCreatingSession(true);
+    haptic();
+    setSendStep('building');
+    try {
+      const diffFiles = await buildLocalDiffFiles(selectedRepo.id, commitShas);
+      const senderDevice = await getDeviceIP();
+      const payload: PatchPayload = {
+        type: 'gitlane-patch',
+        version: '2.0',
+        sessionToken: generateSessionToken(),
+        repoName: selectedRepo.name,
+        repoId: selectedRepo.id,
+        commits: commitShas,
+        senderName: settings.userConfig.name,
+        senderDevice,
+        timestamp: Date.now(),
+        diffFiles,
+      };
+      const frames = buildQRFrames(payload);
+      setQrPayload(payload);
+      setQrFrames(frames);
+      setQrFrameIdx(0);
+      setQrPaused(false);
+      setSendStep('qr-display');
+    } catch (e: any) {
+      Alert.alert('Error', `Could not build patch: ${e?.message ?? e}`);
+      setSendStep('select-commits');
+    }
+  };
+
+  // ─── File Send ────────────────────────────────────────────────────────────────
+
+  const handleFileShare = async () => {
+    if (!selectedRepo) return;
+    setIsSharing(true);
     haptic();
     try {
-      // If no commits explicitly selected, share all available commits (capped at 20)
-      const commitShas = selectedCommits.size > 0
-        ? Array.from(selectedCommits)
-        : availableCommits.slice(0, 20).map(c => c.sha);
-
-      const result = await createSenderSession(
+      const { payload, fileUri } = await sharePatch(
         selectedRepo.id,
         selectedRepo.name,
         settings.userConfig.name,
         commitShas,
-        settings.githubToken,
       );
-      setSenderSession(result.session);
-      setQrString(result.qrString);
-      setDeviceIp(result.deviceIp);
-      setSendStep('qr-ready');
-      startPolling(result.session.sessionToken);
-    } catch (e) {
-      Alert.alert('Error', 'Could not create transfer session.');
+      setPatchFileUri(fileUri);
+      setSharedPayload(payload);
+      setSendStep('file-complete');
+    } catch (e: any) {
+      if (!String(e?.message ?? '').toLowerCase().includes('cancel')) {
+        Alert.alert('Error', `Could not prepare patch: ${e?.message ?? e}`);
+      }
     } finally {
-      setIsCreatingSession(false);
+      setIsSharing(false);
     }
   };
 
-  const resetSend = () => {
-    stopPolling();
-    setSendStep('select-repo');
-    setSenderSession(null);
-    setQrString('');
-    setSelectedRepoId(null);
-    setSelectedCommits(new Set());
-  };
+  // ─── Relay Send ───────────────────────────────────────────────────────────────
 
-  const handleQRScanned = async (data: string) => {
-    const payload = decodeQRPayload(data);
-    if (!payload) {
-      Alert.alert('Invalid QR', 'This QR code is not a GitLane transfer code.', [
-        { text: 'OK', onPress: () => setReceiveStep('scanner') },
-      ]);
-      return;
-    }
-    setScannedPayload(payload);
-    setReceiveStep('connecting');
-
+  const handleStartRelaySend = async () => {
+    if (!selectedRepo) return;
+    haptic();
+    setSendStep('building');
     try {
-      const session = await getSession(payload.sessionToken);
+      const session = await startSenderSession(
+        selectedRepo.id,
+        selectedRepo.name,
+        settings.userConfig.name,
+        commitShas,
+        {
+          onStatus: setLiveSendStatus,
+          onProgress: setLiveSendProgress,
+          onError: (msg) => Alert.alert('Relay Error', msg),
+        },
+      );
+      senderSessionRef.current = session;
+      setLiveToken(session.token);
+      setLiveQRData(session.qrData);
+      setSendStep('qr-display');
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? String(e));
+      setSendStep('select-commits');
+    }
+  };
 
-      // Use session diffs if available and non-empty
-      if (session && session.diffFiles.length > 0) {
-        setReceiveSession(session);
-        setReceivedDiff(session.diffFiles);
-        setReceiveStep('review-diff');
+  // ─── QR Receive ───────────────────────────────────────────────────────────────
+
+  const handleOpenQRScan = async () => {
+    if (!cameraPermission?.granted) {
+      const { granted } = await requestCameraPermission();
+      if (!granted) {
+        Alert.alert('Camera Required', "Allow camera access to scan the sender's QR codes.");
         return;
       }
+    }
+    scanStateRef.current = createScanState();
+    setScanReceived(new Set());
+    setScanTotal(0);
+    scannedRef.current = false;
+    haptic(Haptics.ImpactFeedbackStyle.Light);
+    setReceiveStep('scanning');
+  };
 
-      // Session exists but has empty diffs (failed on sender), or no session at all
-      // (multi-device: session lives on sender). Either way, compute diffs
-      // on the receiver from the commit SHAs embedded in the QR payload.
-      setIsComputingDiff(true);
-      setReceiveStep('review-diff');
-      if (session) setReceiveSession(session);
-
+  const handleQRScanned = useCallback((raw: string) => {
+    const frame = parseQRFrame(raw);
+    if (!frame) return;
+    const state = scanStateRef.current;
+    const wasNew = feedFrame(state, frame);
+    if (wasNew) {
+      setScanTotal(state.total);
+      setScanReceived(new Set(state.received.keys()));
+    }
+    if (isComplete(state) && !scannedRef.current) {
+      scannedRef.current = true;
       try {
-        const diffs = await buildRealDiffFiles(
-          payload.repoId,
-          payload.commits,
-          settings.githubToken,
-          payload.githubOwner,   // baked in by sender — receiver uses their own token
-          payload.githubRepo,
-        );
-        setReceivedDiff(diffs);
-      } catch (diffErr) {
-        console.warn('[P2P] receiver diff build failed', diffErr);
-        setReceivedDiff([]);
-      } finally {
-        setIsComputingDiff(false);
+        const payload = assemblePayload(state);
+        haptic();
+        setImportedPayload(payload);
+        setReceiveStep('review-diff');
+      } catch (e: any) {
+        Alert.alert('Scan Error', `Could not decode patch: ${e?.message ?? e}`);
+        setReceiveStep('idle');
       }
-    } catch {
-      Alert.alert('Connection Error', 'Could not connect to sender.', [
-        { text: 'Retry', onPress: () => setReceiveStep('scanner') },
-      ]);
+    }
+  }, []);
+
+  // ─── File Receive ─────────────────────────────────────────────────────────────
+
+  const handleImportFile = async () => {
+    setIsImporting(true);
+    haptic();
+    try {
+      const payload = await importPatch();
+      if (!payload) { setIsImporting(false); return; }
+      setImportedPayload(payload);
+      setReceiveStep('review-diff');
+    } catch (e: any) {
+      Alert.alert('Import Failed', `Could not read patch file: ${e?.message ?? e}`);
+    } finally {
+      setIsImporting(false);
     }
   };
 
-  const handleAcceptDiff = async () => {
-    haptic(Haptics.ImpactFeedbackStyle.Light);
-    if (receiveSession) {
-      await updateSessionState(receiveSession.sessionToken, 'complete');
+  // ─── Relay Receive ────────────────────────────────────────────────────────────
+
+  const handleJoinRelay = (token: string) => {
+    const clean = extractToken(token.trim());
+    if (!clean) {
+      Alert.alert('Invalid Token', "Enter the 8-character code shown on the sender's screen.");
+      return;
     }
+    haptic();
+    setLiveRecvStatus('connecting');
+    setLiveRecvProgress({ sent: 0, total: 0 });
+    setReceiveStep('relay-receiving');
+    const session = joinReceiverSession(clean, {
+      onStatus: setLiveRecvStatus,
+      onProgress: setLiveRecvProgress,
+      onPayload: (payload) => {
+        receiverSessionRef.current?.cancel();
+        receiverSessionRef.current = null;
+        setImportedPayload(payload);
+        setReceiveStep('review-diff');
+      },
+      onError: (msg) => {
+        Alert.alert('Relay Error', msg);
+        setReceiveStep('idle');
+      },
+    });
+    receiverSessionRef.current = session;
+  };
+
+  // ─── Accept / Reject ─────────────────────────────────────────────────────────
+
+  const handleAccept = () => {
+    haptic(Haptics.ImpactFeedbackStyle.Light);
     setReceiveStep('accepted');
   };
 
-  const handleRejectDiff = () => {
+  const handleReject = () => {
     haptic();
-    Alert.alert(
-      'Reject Changes',
-      'Are you sure you want to reject these incoming changes?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reject',
-          style: 'destructive',
-          onPress: () => {
-            setReceiveStep('scanner');
-            setScannedPayload(null);
-            setReceivedDiff([]);
-            setReceiveSession(null);
-          },
-        },
-      ]
-    );
+    Alert.alert('Reject Changes', 'Discard these incoming changes?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Reject', style: 'destructive',
+        onPress: () => { setReceiveStep('idle'); setImportedPayload(null); },
+      },
+    ]);
   };
 
-  // ─── Render: Send ────────────────────────────────────────────────────────────
+  // ─── Render: Repo selection ───────────────────────────────────────────────────
 
-  function renderSend() {
-    if (sendStep === 'select-repo') {
-      return (
-        <>
-          <Text style={styles.sectionLabel}>SELECT REPOSITORY</Text>
-          {repositories.length === 0 ? (
-            <View style={styles.emptyState}>
-              <FolderGit2 size={40} color={Colors.textMuted} />
-              <Text style={styles.emptyText}>No repositories found.</Text>
-              <Text style={styles.emptySubText}>Clone or create a repo first.</Text>
-            </View>
-          ) : (
-            repositories.map((repo) => (
-              <TouchableOpacity
-                key={repo.id}
-                style={[styles.repoOption, selectedRepoId === repo.id && styles.repoOptionSelected]}
-                onPress={() => { haptic(Haptics.ImpactFeedbackStyle.Light); setSelectedRepoId(repo.id); }}
-                activeOpacity={0.75}
-              >
-                <FolderGit2 size={22} color={selectedRepoId === repo.id ? Colors.accentPrimary : Colors.textMuted} />
-                <View style={styles.repoOptionContent}>
-                  <Text style={styles.repoOptionName}>{repo.name}</Text>
-                  <Text style={styles.repoOptionMeta}>{repo.currentBranch} · {repo.commitCount} commits · {repo.size}</Text>
-                </View>
-                {selectedRepoId === repo.id ? (
-                  <CheckCircle size={18} color={Colors.accentPrimary} />
-                ) : (
-                  <ChevronRight size={16} color={Colors.textMuted} />
-                )}
-              </TouchableOpacity>
-            ))
-          )}
-          {selectedRepoId && (
-            <View style={{ marginTop: Spacing.lg }}>
-              <GlowButton
-                title="Select Commits →"
-                onPress={() => setSendStep('select-commits')}
-                fullWidth
-                icon={<GitCommitIcon size={18} color="#fff" />}
-              />
-            </View>
-          )}
-        </>
-      );
-    }
+  function renderSelectRepo() {
+    return (
+      <>
+        <Text style={styles.sectionLabel}>SELECT REPOSITORY</Text>
+        {repositories.length === 0 ? (
+          <View style={styles.emptyState}>
+            <FolderGit2 size={40} color={Colors.textMuted} />
+            <Text style={styles.emptyTitle}>No repositories found</Text>
+            <Text style={styles.emptySub}>Clone or create a repo first.</Text>
+          </View>
+        ) : (
+          repositories.map((repo) => (
+            <TouchableOpacity
+              key={repo.id}
+              style={[styles.repoRow, selectedRepoId === repo.id && styles.repoRowActive]}
+              onPress={() => { haptic(Haptics.ImpactFeedbackStyle.Light); setSelectedRepoId(repo.id); }}
+              activeOpacity={0.75}
+            >
+              <FolderGit2 size={22} color={selectedRepoId === repo.id ? Colors.accentPrimary : Colors.textMuted} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.repoName}>{repo.name}</Text>
+                <Text style={styles.repoMeta}>{repo.currentBranch} · {repo.commitCount} commits · {repo.size}</Text>
+              </View>
+              {selectedRepoId === repo.id
+                ? <CheckCircle size={18} color={Colors.accentPrimary} />
+                : <ChevronRight size={16} color={Colors.textMuted} />}
+            </TouchableOpacity>
+          ))
+        )}
+        {selectedRepoId && (
+          <View style={{ marginTop: Spacing.lg }}>
+            <GlowButton
+              title="Choose Commits →"
+              onPress={() => setSendStep('select-commits')}
+              fullWidth
+              icon={<GitCommitIcon size={18} color="#fff" />}
+            />
+          </View>
+        )}
+      </>
+    );
+  }
 
-    if (sendStep === 'select-commits') {
+  // ─── Render: Commit selection ─────────────────────────────────────────────────
+
+  function renderSelectCommits() {
+    const labelMap: Record<TransferMethod, string> = {
+      qr: 'Show Animated QR',
+      file: 'Share Patch File',
+      relay: 'Start Live Transfer',
+    };
+    const iconMap: Record<TransferMethod, React.ReactNode> = {
+      qr: <QrCode size={18} color="#fff" />,
+      file: <Share2 size={18} color="#fff" />,
+      relay: <Radio size={18} color="#fff" />,
+    };
+    const onGoMap: Record<TransferMethod, () => void> = {
+      qr: handleBuildQR,
+      file: handleFileShare,
+      relay: handleStartRelaySend,
+    };
+    return (
+      <>
+        <TouchableOpacity style={styles.backRow} onPress={() => setSendStep('select-repo')}>
+          <ArrowLeft size={16} color={Colors.textSecondary} />
+          <Text style={styles.backText}>{selectedRepo?.name ?? 'Back'}</Text>
+        </TouchableOpacity>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionLabel}>SELECT COMMITS</Text>
+          <Text style={styles.sectionCount}>
+            {selectedCommits.size > 0 ? `${selectedCommits.size} selected` : 'all recent'}
+          </Text>
+        </View>
+        {isLoadingCommits ? (
+          <View style={styles.centerPad}>
+            <ActivityIndicator color={Colors.accentPrimary} />
+            <Text style={styles.dimText}>Loading commits…</Text>
+          </View>
+        ) : repoCommits.length === 0 ? (
+          <View style={styles.centerPad}>
+            <Text style={styles.dimText}>No commits found.</Text>
+          </View>
+        ) : repoCommits.map((c, i) => (
+          <CommitRow
+            key={`${c.sha}-${i}`}
+            commit={c}
+            selected={selectedCommits.has(c.sha) || selectedCommits.has(c.shortSha)}
+            onPress={() => toggleCommit(c.sha)}
+          />
+        ))}
+        <View style={styles.goSection}>
+          <View style={styles.infoBanner}>
+            <Info size={13} color={Colors.accentPrimary} />
+            <Text style={styles.infoBannerText}>Only diffs are transferred — not the full repository</Text>
+          </View>
+          <GlowButton
+            title={selectedCommits.size > 0
+              ? `${labelMap[method]} — ${selectedCommits.size} commit${selectedCommits.size !== 1 ? 's' : ''}`
+              : labelMap[method]}
+            onPress={onGoMap[method]}
+            fullWidth
+            loading={method === 'file' && isSharing}
+            icon={iconMap[method]}
+          />
+        </View>
+      </>
+    );
+  }
+
+  // ─── Render: Building ─────────────────────────────────────────────────────────
+
+  function renderBuilding() {
+    return (
+      <View style={styles.centerFull}>
+        <ActivityIndicator size="large" color={Colors.accentPrimary} />
+        <Text style={styles.buildingTitle}>
+          {method === 'relay' ? 'Connecting…' : 'Computing Diffs…'}
+        </Text>
+        <Text style={styles.buildingMeta}>
+          {method === 'relay'
+            ? 'Connecting to relay and building patch'
+            : 'Reading git objects from local repository'}
+        </Text>
+      </View>
+    );
+  }
+
+  // ─── Render: QR / Relay display ───────────────────────────────────────────────
+
+  function renderQRDisplay() {
+    if (method === 'relay') {
+      const statusMap: Record<LiveStatus, string> = {
+        connecting: 'Connecting to relay…',
+        'waiting-peer': 'Waiting for receiver to scan…',
+        building: 'Computing diffs — receiver can join now…',
+        transferring: `Sending… ${liveSendProgress.sent}/${liveSendProgress.total} chunks`,
+        complete: 'Transfer complete!',
+        error: 'Connection error',
+      };
+      const isDone = liveSendStatus === 'complete';
       return (
-        <>
-          <TouchableOpacity style={styles.backRow} onPress={() => setSendStep('select-repo')}>
-            <ArrowLeft size={16} color={Colors.textSecondary} />
-            <Text style={styles.backText}>Back to Repository</Text>
-          </TouchableOpacity>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionLabel}>SELECT COMMITS TO SHARE</Text>
-            <Text style={styles.sectionHint}>
-              {selectedCommits.size > 0 ? `${selectedCommits.size} selected` : 'tap to select'}
+        <View style={styles.qrPanel}>
+          <View style={styles.qrCard}>
+            {liveQRData ? (
+              <QRCode value={liveQRData} size={QR_SIZE} color={Colors.textPrimary} backgroundColor={Colors.bgSecondary} />
+            ) : (
+              <View style={[{ width: QR_SIZE, height: QR_SIZE }, styles.qrPlaceholder]}>
+                <ActivityIndicator color={Colors.accentPrimary} />
+              </View>
+            )}
+          </View>
+          {liveToken ? (
+            <TouchableOpacity
+              style={styles.tokenBox}
+              onPress={async () => { await Clipboard.setStringAsync(liveToken); haptic(Haptics.ImpactFeedbackStyle.Light); }}
+              activeOpacity={0.75}
+            >
+              <Text style={styles.tokenText}>{liveToken}</Text>
+              <Copy size={14} color={Colors.textMuted} />
+            </TouchableOpacity>
+          ) : null}
+          <Text style={styles.qrHint}>
+            Open GitLane on receiver → Receive → WebSocket Relay, then scan this QR or type the code
+          </Text>
+          <View style={styles.liveStatusRow}>
+            {!isDone
+              ? <ActivityIndicator size="small" color={Colors.accentPrimary} />
+              : <CheckCircle size={15} color={Colors.accentPrimary} />}
+            <Text style={[styles.liveStatusText, isDone && { color: Colors.accentPrimary }]}>
+              {statusMap[liveSendStatus]}
             </Text>
           </View>
-          {isLoadingCommits ? (
-            <View style={{ alignItems: 'center', paddingVertical: Spacing.xxl }}>
-              <ActivityIndicator color={Colors.accentPrimary} />
-              <Text style={[styles.sectionHint, { marginTop: 8 }]}>Loading commits…</Text>
+          {liveSendStatus === 'transferring' && liveSendProgress.total > 0 && (
+            <View style={[styles.progressTrack, { width: '85%' }]}>
+              <View style={[styles.progressFill, { width: `${Math.round((liveSendProgress.sent / liveSendProgress.total) * 100)}%` }]} />
             </View>
-          ) : availableCommits.length === 0 ? (
-            <View style={{ alignItems: 'center', paddingVertical: Spacing.xxl }}>
-              <Text style={styles.sectionHint}>No commits found in this repository.</Text>
-            </View>
-          ) : availableCommits.map((commit, idx) => (
-            <CommitRow
-              key={`${commit.sha}-${idx}`}
-              commit={commit}
-              selected={selectedCommits.has(commit.sha) || selectedCommits.has(commit.shortSha)}
-              onPress={() => toggleCommit(commit.sha)}
-            />
-          ))}
-          <View style={styles.generateQRSection}>
-            <View style={styles.diffSummary}>
-              <Wifi size={14} color={Colors.accentPrimary} />
-              <Text style={styles.diffSummaryText}>Only diffs will be transferred — not the full repo</Text>
-            </View>
-            <GlowButton
-              title={selectedCommits.size === 0
-                ? 'Share All Recent Commits'
-                : `Generate QR — ${selectedCommits.size} commit${selectedCommits.size !== 1 ? 's' : ''}`}
-              onPress={handleGenerateQR}
-              fullWidth
-              loading={isCreatingSession}
-              icon={<QrCode size={18} color="#fff" />}
-            />
+          )}
+          <View style={{ width: '100%', marginTop: Spacing.xl, gap: Spacing.sm }}>
+            {isDone ? (
+              <GlowButton title="Done" onPress={resetSend} fullWidth />
+            ) : (
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => { senderSessionRef.current?.cancel(); senderSessionRef.current = null; setSendStep('select-commits'); }}>
+                <XCircle size={16} color={Colors.accentDanger} />
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            )}
           </View>
-        </>
+        </View>
       );
     }
 
-    if (sendStep === 'qr-ready' && senderSession) {
-      return (
-        <View style={styles.qrContainer}>
-          <View style={styles.qrInfoCard}>
-            <FolderGit2 size={16} color={Colors.accentPrimary} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.qrInfoRepo}>{senderSession.repoName}</Text>
-              <Text style={styles.qrInfoMeta}>
-                {senderSession.diffFiles.length} file{senderSession.diffFiles.length !== 1 ? 's' : ''} · diff only
-              </Text>
+    // ── Animated Direct QR ──
+    const currentFrame = qrFrames[qrFrameIdx] ?? '';
+    return (
+      <View style={styles.qrPanel}>
+        <View style={styles.qrMethodBadge}>
+          <QrCode size={12} color={Colors.accentPrimary} />
+          <Text style={styles.qrMethodBadgeText}>Direct QR · Offline · App to App</Text>
+        </View>
+        <View style={styles.qrCard}>
+          {currentFrame ? (
+            <QRCode value={currentFrame} size={QR_SIZE} color={Colors.textPrimary} backgroundColor={Colors.bgSecondary} ecl="M" />
+          ) : (
+            <View style={[{ width: QR_SIZE, height: QR_SIZE }, styles.qrPlaceholder]}>
+              <ActivityIndicator color={Colors.accentPrimary} />
             </View>
-            <View style={styles.sessionTokenBadge}>
-              <Text style={styles.sessionTokenText}>{senderSession.sessionToken}</Text>
-            </View>
-          </View>
-
-          <View style={styles.qrWrapper}>
-            <PulseRing />
-            <View style={styles.qrBox}>
-              <QRCode
-                value={qrString}
-                size={210}
-                color={Colors.textPrimary}
-                backgroundColor={Colors.bgSecondary}
-                quietZone={12}
-              />
-            </View>
-          </View>
-
-          <Text style={styles.qrCaption}>
-            Ask receiver to open GitLane → Transfer → Receive → Scan QR
+          )}
+        </View>
+        <View style={styles.frameCounterRow}>
+          <Text style={styles.frameCounterText}>
+            Frame {qrFrameIdx + 1} / {qrFrames.length}
           </Text>
-
-          <View style={styles.networkRow}>
-            <View style={styles.networkBadge}>
-              <View style={styles.networkDot} />
-              <Wifi size={12} color={Colors.accentPrimary} />
-              <Text style={styles.networkText}>{deviceIp}</Text>
-            </View>
-            <View style={styles.networkBadge}>
-              <Zap size={12} color={Colors.accentPrimary} />
-              <Text style={styles.networkText}>Waiting for receiver…</Text>
-            </View>
+          <TouchableOpacity style={styles.pauseBtn} onPress={() => setQrPaused((p) => !p)}>
+            {qrPaused ? <Play size={16} color={Colors.accentPrimary} /> : <Pause size={16} color={Colors.accentPrimary} />}
+            <Text style={styles.pauseBtnText}>{qrPaused ? 'Resume' : 'Pause'}</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${((qrFrameIdx + 1) / Math.max(qrFrames.length, 1)) * 100}%` }]} />
+        </View>
+        <Text style={styles.qrHint}>
+          Open GitLane on the receiver → Receive → Direct QR and point the camera here
+        </Text>
+        {qrPayload && (
+          <View style={styles.qrMeta}>
+            <Text style={styles.qrMetaItem}>📦 {qrPayload.repoName}</Text>
+            <Text style={styles.qrMetaItem}>🔀 {qrPayload.diffFiles.length} files · {qrPayload.commits.length} commit{qrPayload.commits.length !== 1 ? 's' : ''}</Text>
+            <Text style={styles.qrMetaItem}>⏱ ~{estimateTransferSeconds(JSON.stringify(qrPayload))}s total</Text>
           </View>
+        )}
+        <View style={{ width: '100%', marginTop: Spacing.lg }}>
+          <GlowButton title="Done Sharing" onPress={resetSend} fullWidth icon={<Check size={18} color="#fff" />} />
+        </View>
+      </View>
+    );
+  }
 
-          <Text style={styles.sectionLabel}>CHANGES TO BE SENT</Text>
-          <View style={{ minHeight: 300, width: '100%' }}>
-            <DiffViewer
-              files={senderSession.diffFiles}
-              repoName={senderSession.repoName}
-              commitCount={senderSession.commits.length || 3}
+  // ─── Render: Send ─────────────────────────────────────────────────────────────
+
+  function renderSend() {
+    if (sendStep === 'select-repo') return renderSelectRepo();
+    if (sendStep === 'select-commits') return renderSelectCommits();
+    if (sendStep === 'building') return renderBuilding();
+    if (sendStep === 'qr-display') return renderQRDisplay();
+    if (sendStep === 'file-complete' && sharedPayload) {
+      return (
+        <DoneCard
+          title="Patch Shared!"
+          subtitle={`${sharedPayload.diffFiles.length} file${sharedPayload.diffFiles.length !== 1 ? 's' : ''} in patch`}
+          meta={[
+            { label: 'Repository', value: sharedPayload.repoName },
+            { label: 'Session', value: sharedPayload.sessionToken },
+            { label: 'Commits', value: String(sharedPayload.commits.length) },
+          ]}
+          onDone={resetSend}
+        />
+      );
+    }
+    return null;
+  }
+
+  // ─── Render: Receive idle ─────────────────────────────────────────────────────
+
+  function renderReceiveIdle() {
+    if (method === 'qr') {
+      return (
+        <View style={styles.receivePanel}>
+          <View style={styles.receiveIllo}>
+            <QrCode size={52} color={Colors.accentPrimary} strokeWidth={1.2} />
+          </View>
+          <Text style={styles.receiveTitle}>Direct QR Receive</Text>
+          <Text style={styles.receiveSub}>
+            Point your camera at the sender's animated QR codes. GitLane automatically
+            reassembles all frames and shows you the diff.{'\n\n'}
+            100% offline — no WiFi or internet needed.
+          </Text>
+          <View style={styles.offlineBadgeRow}>
+            <View style={styles.offlineBadge}><Zap size={12} color={Colors.accentPrimary} /><Text style={styles.offlineBadgeText}>100% Offline</Text></View>
+            <View style={styles.offlineBadge}><QrCode size={12} color={Colors.accentPrimary} /><Text style={styles.offlineBadgeText}>Camera Only</Text></View>
+            <View style={styles.offlineBadge}><Smartphone size={12} color={Colors.accentPrimary} /><Text style={styles.offlineBadgeText}>App to App</Text></View>
+          </View>
+          <View style={{ width: '100%', marginTop: Spacing.lg }}>
+            <GlowButton title="Open Camera Scanner" onPress={handleOpenQRScan} fullWidth icon={<ScanLine size={18} color="#fff" />} />
+          </View>
+        </View>
+      );
+    }
+
+    if (method === 'file') {
+      return (
+        <View style={styles.receivePanel}>
+          <View style={styles.receiveIllo}>
+            <FileDown size={52} color={Colors.accentPrimary} strokeWidth={1.2} />
+          </View>
+          <Text style={styles.receiveTitle}>Import Patch File</Text>
+          <Text style={styles.receiveSub}>
+            Ask the sender to share their .gitlanepatch file via AirDrop, Nearby Share,
+            Bluetooth, email, or USB. Then tap Import.
+          </Text>
+          <View style={styles.methodsRow}>
+            <View style={styles.methodPill}><Wifi size={12} color={Colors.accentPrimary} /><Text style={styles.methodPillText}>WiFi Direct</Text></View>
+            <View style={styles.methodPill}><Zap size={12} color={Colors.accentPrimary} /><Text style={styles.methodPillText}>AirDrop</Text></View>
+            <View style={styles.methodPill}><Smartphone size={12} color={Colors.accentPrimary} /><Text style={styles.methodPillText}>Bluetooth</Text></View>
+          </View>
+          <View style={{ width: '100%', marginTop: Spacing.lg }}>
+            <GlowButton title="Import Patch File" onPress={handleImportFile} fullWidth loading={isImporting} icon={<FileDown size={18} color="#fff" />} />
+          </View>
+        </View>
+      );
+    }
+
+    // WebSocket Relay
+    return (
+      <View style={styles.receivePanel}>
+        <View style={styles.receiveIllo}>
+          <Radio size={52} color={Colors.accentPrimary} strokeWidth={1.2} />
+        </View>
+        <Text style={styles.receiveTitle}>WebSocket Relay Receive</Text>
+        <Text style={styles.receiveSub}>
+          Scan the QR on the sender's screen or enter their 8-character session token.
+          Both devices need internet.
+        </Text>
+        <View style={styles.relayInputGroup}>
+          <Text style={styles.relayInputLabel}>Session Token</Text>
+          <View style={styles.relayInputRow}>
+            <TextInput
+              style={styles.relayInput}
+              placeholder="ABCD1234"
+              placeholderTextColor={Colors.textMuted}
+              value={tokenInput}
+              onChangeText={(t) => setTokenInput(t.toUpperCase().replace(/[^A-Z2-9]/g, ''))}
+              maxLength={8}
+              autoCapitalize="characters"
+              autoCorrect={false}
             />
+            <TouchableOpacity
+              style={[styles.joinBtn, tokenInput.length !== 8 && styles.joinBtnOff]}
+              onPress={() => handleJoinRelay(tokenInput)}
+              disabled={tokenInput.length !== 8}
+            >
+              <Text style={styles.joinBtnText}>Join</Text>
+            </TouchableOpacity>
           </View>
+        </View>
+        <View style={styles.orRow}>
+          <View style={styles.orLine} /><Text style={styles.orText}>or scan QR</Text><View style={styles.orLine} />
+        </View>
+        <GlowButton
+          title="Scan Relay QR"
+          onPress={async () => {
+            if (!cameraPermission?.granted) {
+              const { granted } = await requestCameraPermission();
+              if (!granted) { Alert.alert('Camera Required', 'Allow camera to scan the relay QR.'); return; }
+            }
+            scannedRef.current = false;
+            setReceiveStep('scanning');
+          }}
+          fullWidth
+          icon={<ScanLine size={18} color="#fff" />}
+        />
+      </View>
+    );
+  }
 
-          <TouchableOpacity style={styles.cancelRow} onPress={resetSend}>
-            <XCircle size={16} color={Colors.textMuted} />
-            <Text style={styles.cancelRowText}>Cancel Transfer</Text>
+  // ─── Render: Receive ──────────────────────────────────────────────────────────
+
+  function renderReceive() {
+    if (receiveStep === 'idle') return renderReceiveIdle();
+
+    if (receiveStep === 'scanning') {
+      const isRelayQR = method === 'relay';
+      const pct = scanTotal > 0 ? Math.round((scanReceived.size / scanTotal) * 100) : 0;
+      return (
+        <View style={styles.scannerWrapper}>
+          <CameraView
+            style={styles.scannerCamera}
+            facing="back"
+            onBarcodeScanned={({ data }) => {
+              if (isRelayQR) {
+                if (scannedRef.current) return;
+                const token = extractToken(data);
+                if (token) { scannedRef.current = true; setReceiveStep('idle'); handleJoinRelay(token); }
+              } else {
+                handleQRScanned(data);
+              }
+            }}
+            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+          />
+          <View style={styles.scanOverlayBorder} pointerEvents="none" />
+          <View style={styles.scanTopBar}>
+            <TouchableOpacity style={styles.scanCloseBtn} onPress={() => setReceiveStep('idle')}>
+              <XCircle size={26} color="#fff" />
+            </TouchableOpacity>
+            <View style={{ flex: 1, alignItems: 'center' }}>
+              <Text style={styles.scanTopTitle}>{isRelayQR ? 'Scan Relay QR' : 'Direct QR Scan'}</Text>
+              {!isRelayQR && <Text style={styles.scanTopSub}>Keep camera steady — auto-assembling frames</Text>}
+            </View>
+            <View style={{ width: 32 }} />
+          </View>
+          {!isRelayQR && (
+            <View style={styles.scanBottomBar}>
+              {scanTotal > 0 ? (
+                <>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={styles.scanProgressText}>{scanReceived.size} / {scanTotal} frames ({pct}%)</Text>
+                    {pct === 100 && <CheckCircle size={15} color={Colors.accentPrimary} />}
+                  </View>
+                  <View style={[styles.progressTrack, { width: '100%', marginTop: 6 }]}>
+                    <View style={[styles.progressFill, { width: `${pct}%` }]} />
+                  </View>
+                  <FrameDots total={scanTotal} received={scanReceived} />
+                  {scanReceived.size < scanTotal && (
+                    <Text style={styles.scanMissingText}>
+                      Missing: {missingFrames(scanStateRef.current).slice(0, 8).join(', ')}
+                      {missingFrames(scanStateRef.current).length > 8 ? '…' : ''}
+                    </Text>
+                  )}
+                </>
+              ) : (
+                <Text style={styles.scanProgressText}>Waiting for first frame…</Text>
+              )}
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    if (receiveStep === 'importing' || receiveStep === 'relay-receiving') {
+      const statusMap: Record<LiveStatus, string> = {
+        connecting: 'Connecting to relay…',
+        'waiting-peer': 'Waiting for sender…',
+        building: 'Sender is computing diffs…',
+        transferring: 'Receiving data…',
+        complete: 'Transfer complete!',
+        error: 'Failed',
+      };
+      return (
+        <View style={styles.centerFull}>
+          <ActivityIndicator size="large" color={Colors.accentPrimary} />
+          <Text style={styles.buildingTitle}>
+            {receiveStep === 'relay-receiving' ? statusMap[liveRecvStatus] : 'Reading Patch…'}
+          </Text>
+          {receiveStep === 'relay-receiving' && liveRecvProgress.total > 0 && (
+            <>
+              <View style={[styles.progressTrack, { width: '75%', marginTop: Spacing.md }]}>
+                <View style={[styles.progressFill, { width: `${Math.round((liveRecvProgress.sent / liveRecvProgress.total) * 100)}%` }]} />
+              </View>
+              <Text style={styles.buildingMeta}>{liveRecvProgress.sent} / {liveRecvProgress.total} chunks</Text>
+            </>
+          )}
+          <TouchableOpacity
+            style={[styles.cancelBtn, { marginTop: Spacing.xl }]}
+            onPress={() => { receiverSessionRef.current?.cancel(); receiverSessionRef.current = null; setReceiveStep('idle'); }}
+          >
+            <XCircle size={15} color={Colors.accentDanger} />
+            <Text style={styles.cancelBtnText}>Cancel</Text>
           </TouchableOpacity>
         </View>
       );
     }
 
-    if (sendStep === 'complete' && senderSession) {
-      return <TransferComplete session={senderSession} onDone={resetSend} />;
+    if (receiveStep === 'review-diff' && importedPayload) {
+      return (
+        <View style={styles.reviewWrapper}>
+          <View style={styles.incomingBar}>
+            <Smartphone size={15} color={Colors.accentPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.incomingTitle}>{importedPayload.senderName} wants to share</Text>
+              <Text style={styles.incomingMeta}>
+                {importedPayload.repoName} · {importedPayload.commits.length} commit{importedPayload.commits.length !== 1 ? 's' : ''} · {importedPayload.diffFiles.length} files
+              </Text>
+            </View>
+            <View style={styles.receivedPill}>
+              <View style={styles.receivedDot} />
+              <Text style={styles.receivedPillText}>
+                {method === 'qr' ? 'QR Scan' : method === 'file' ? 'Imported' : 'Relay'}
+              </Text>
+            </View>
+          </View>
+          <View style={{ flex: 1 }}>
+            <DiffViewer files={importedPayload.diffFiles} repoName={importedPayload.repoName} commitCount={importedPayload.commits.length} />
+          </View>
+          <View style={styles.reviewActions}>
+            <TouchableOpacity style={styles.rejectBtn} onPress={handleReject}>
+              <XCircle size={17} color={Colors.accentDanger} />
+              <Text style={styles.rejectText}>Reject</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.acceptBtn} onPress={handleAccept}>
+              <Check size={17} color="#fff" />
+              <Text style={styles.acceptText}>Accept Changes</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
     }
 
-    return null;
-  }
-
-  // ─── Render: Receive ─────────────────────────────────────────────────────────
-
-  function renderReceive() {
-    if (receiveStep === 'scanner') {
+    if (receiveStep === 'accepted' && importedPayload) {
       return (
-        <QRScanner
-          onScanned={handleQRScanned}
-          onCancel={() => handleModeChange(0)}
+        <DoneCard
+          title="Changes Accepted"
+          subtitle={`${importedPayload.diffFiles.length} file${importedPayload.diffFiles.length !== 1 ? 's' : ''} from ${importedPayload.repoName}`}
+          meta={[
+            { label: 'Sender', value: importedPayload.senderName },
+            { label: 'Commits', value: String(importedPayload.commits.length) },
+            { label: 'Method', value: method === 'qr' ? 'Direct QR' : method === 'file' ? 'File Share' : 'WebSocket Relay' },
+          ]}
+          onDone={resetReceive}
         />
       );
     }
 
-    if (receiveStep === 'connecting') {
-      return (
-        <View style={styles.connectingContainer}>
-          <ActivityIndicator size="large" color={Colors.accentPrimary} />
-          <Text style={styles.connectingTitle}>Connecting to Sender</Text>
-          {scannedPayload && (
-            <>
-              <Text style={styles.connectingMeta}>{scannedPayload.repoName} · {scannedPayload.deviceIp}</Text>
-              <Text style={styles.connectingMeta}>Session: {scannedPayload.sessionToken}</Text>
-            </>
-          )}
-        </View>
-      );
-    }
-
-    if (receiveStep === 'review-diff') {
-      return (
-        <View style={styles.reviewContainer}>
-          <View style={styles.incomingBar}>
-            <Smartphone size={16} color={Colors.accentPrimary} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.incomingTitle}>
-                {scannedPayload?.senderName ?? 'Unknown Sender'} wants to share
-              </Text>
-              <Text style={styles.incomingMeta}>
-                {scannedPayload?.repoName} · {scannedPayload?.commits.length} commit{scannedPayload?.commits.length !== 1 ? 's' : ''} · diffs only
-              </Text>
-            </View>
-            <View style={styles.connectedPill}>
-              <View style={styles.connectedDot} />
-              <Text style={styles.connectedText}>Connected</Text>
-            </View>
-          </View>
-          <View style={{ flex: 1 }}>
-            <DiffViewer
-              files={receivedDiff}
-              repoName={scannedPayload?.repoName}
-              commitCount={scannedPayload?.commits.length}
-              loading={isComputingDiff}
-            />
-          </View>
-          <View style={styles.reviewActions}>
-            <TouchableOpacity style={styles.rejectBtn} onPress={handleRejectDiff}>
-              <XCircle size={18} color={Colors.accentDanger} />
-              <Text style={styles.rejectBtnText}>Reject</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.acceptBtn} onPress={handleAcceptDiff}>
-              <Check size={18} color="#fff" />
-              <Text style={styles.acceptBtnText}>Accept Changes</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      );
-    }
-
-    if (receiveStep === 'accepted') {
-      return (
-        <View style={styles.completeContainer}>
-          <CheckCircle size={64} color={Colors.accentPrimary} strokeWidth={1.5} style={{ marginBottom: Spacing.lg }} />
-          <Text style={styles.completeTitle}>Changes Accepted</Text>
-          <Text style={styles.completeSubtitle}>
-            {receivedDiff.length} file{receivedDiff.length !== 1 ? 's' : ''} applied from {scannedPayload?.repoName}
-          </Text>
-          <View style={{ marginTop: Spacing.xl, width: '100%' }}>
-            <GlowButton
-              title="Done"
-              onPress={() => {
-                setReceiveStep('scanner');
-                setScannedPayload(null);
-                setReceivedDiff([]);
-                setReceiveSession(null);
-              }}
-              fullWidth
-            />
-          </View>
-        </View>
-      );
-    }
-
     return null;
   }
 
-  // ─── Root render ─────────────────────────────────────────────────────────────
+  // ─── Root render ──────────────────────────────────────────────────────────────
 
-  const isFullscreenScanner = mode === 1 && receiveStep === 'scanner';
-  const isFullscreenReview = mode === 1 && receiveStep === 'review-diff';
+  const isFullscreen = receiveStep === 'scanning' || receiveStep === 'review-diff';
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>P2P Transfer</Text>
+        <View>
+          <Text style={styles.headerTitle}>P2P Transfer</Text>
+          <Text style={styles.headerSub}>GitLane · App to App</Text>
+        </View>
         <View style={styles.headerBadge}>
           <Zap size={12} color={Colors.accentPrimary} />
-          <Text style={styles.headerBadgeText}>Diff Only · Local WiFi</Text>
+          <Text style={styles.headerBadgeText}>Offline Capable</Text>
         </View>
       </View>
 
-      {!isFullscreenScanner && (
-        <View style={styles.segmentWrap}>
-          <SegmentedControl
-            segments={['Send', 'Receive']}
-            selectedIndex={mode}
-            onChange={handleModeChange}
-          />
-        </View>
-      )}
+      <View style={styles.modeBar}>
+        <SegmentedControl segments={['Send', 'Receive']} selectedIndex={mode} onChange={handleModeChange} />
+      </View>
 
-      {isFullscreenScanner || isFullscreenReview ? (
-        renderReceive()
+      {!isFullscreen &&
+        sendStep !== 'qr-display' &&
+        sendStep !== 'building' &&
+        sendStep !== 'file-complete' &&
+        receiveStep === 'idle' && (
+          <View style={styles.methodBar}>
+            <MethodChip label="Direct QR" icon={<QrCode size={14} color={method === 'qr' ? Colors.accentPrimary : Colors.textMuted} />} active={method === 'qr'} onPress={() => { haptic(Haptics.ImpactFeedbackStyle.Light); setMethod('qr'); }} />
+            <MethodChip label="File Share" icon={<FileDown size={14} color={method === 'file' ? Colors.accentPrimary : Colors.textMuted} />} active={method === 'file'} onPress={() => { haptic(Haptics.ImpactFeedbackStyle.Light); setMethod('file'); }} />
+            <MethodChip label="WebSocket Relay" icon={<Radio size={14} color={method === 'relay' ? Colors.accentPrimary : Colors.textMuted} />} active={method === 'relay'} onPress={() => { haptic(Haptics.ImpactFeedbackStyle.Light); setMethod('relay'); }} />
+          </View>
+        )}
+
+      {isFullscreen ? (
+        <View style={{ flex: 1 }}>{mode === 1 ? renderReceive() : null}</View>
       ) : (
-        <ScrollView
-          style={styles.content}
-          contentContainerStyle={styles.contentInner}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           {mode === 0 ? renderSend() : renderReceive()}
           <View style={{ height: 100 }} />
         </ScrollView>
@@ -744,298 +1155,150 @@ export default function TransferScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bgPrimary },
+  root: { flex: 1, backgroundColor: Colors.bgPrimary },
   header: {
-    height: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.md,
-    backgroundColor: Colors.bgSecondary,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.borderDefault,
+    height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md, backgroundColor: Colors.bgSecondary,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.borderDefault,
   },
-  headerTitle: { fontSize: 20, fontWeight: '700' as const, color: Colors.textPrimary },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: Colors.textPrimary },
+  headerSub: { fontSize: 11, color: Colors.textMuted, marginTop: 1 },
   headerBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.accentPrimaryDim,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: Radius.full,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Colors.accentPrimaryDim, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full,
   },
-  headerBadgeText: { fontSize: 11, fontWeight: '600' as const, color: Colors.accentPrimary },
-  segmentWrap: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    backgroundColor: Colors.bgSecondary,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.borderDefault,
+  headerBadgeText: { fontSize: 11, fontWeight: '600', color: Colors.accentPrimary },
+  modeBar: {
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    backgroundColor: Colors.bgSecondary, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.borderDefault,
   },
-  content: { flex: 1 },
-  contentInner: { padding: Spacing.md },
+  methodBar: {
+    flexDirection: 'row', gap: Spacing.xs, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    backgroundColor: Colors.bgSecondary, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.borderDefault,
+  },
+  methodChipBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
+    paddingVertical: 7, borderRadius: Radius.md, backgroundColor: Colors.bgTertiary,
+    borderWidth: 1, borderColor: Colors.borderDefault,
+  },
+  methodChipBtnActive: { borderColor: Colors.accentPrimary, backgroundColor: Colors.accentPrimaryDim },
+  methodChipLabel: { fontSize: 12, fontWeight: '600', color: Colors.textMuted },
+  methodChipLabelActive: { color: Colors.accentPrimary },
+  scroll: { flex: 1 },
+  scrollContent: { padding: Spacing.md },
   sectionLabel: {
-    fontSize: 11,
-    fontWeight: '600' as const,
-    letterSpacing: 0.5,
-    color: Colors.textMuted,
-    textTransform: 'uppercase',
-    marginBottom: Spacing.sm,
-    marginTop: Spacing.md,
+    fontSize: 11, fontWeight: '600', letterSpacing: 0.6, textTransform: 'uppercase',
+    color: Colors.textMuted, marginBottom: Spacing.sm, marginTop: Spacing.md,
   },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  sectionHint: { fontSize: 12, color: Colors.accentPrimary, marginBottom: Spacing.sm, marginTop: Spacing.md },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: Spacing.sm,
-    paddingVertical: Spacing.xs,
-  },
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sectionCount: { fontSize: 12, color: Colors.accentPrimary, marginBottom: Spacing.sm, marginTop: Spacing.md },
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: Spacing.xs, marginBottom: Spacing.sm },
   backText: { fontSize: 14, color: Colors.textSecondary },
-  emptyState: { alignItems: 'center', paddingVertical: Spacing.xxl, gap: 8 },
-  emptyText: { fontSize: 16, color: Colors.textSecondary, fontWeight: '500' as const },
-  emptySubText: { fontSize: 13, color: Colors.textMuted },
-  repoOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: Colors.bgSecondary,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    marginBottom: Spacing.sm,
-    borderWidth: 1,
-    borderColor: Colors.borderDefault,
+  emptyState: { alignItems: 'center', paddingVertical: 48, gap: 8 },
+  emptyTitle: { fontSize: 16, fontWeight: '500', color: Colors.textSecondary },
+  emptySub: { fontSize: 13, color: Colors.textMuted },
+  repoRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: Colors.bgSecondary, borderRadius: Radius.md, padding: Spacing.md,
+    marginBottom: Spacing.sm, borderWidth: 1, borderColor: Colors.borderDefault,
   },
-  repoOptionSelected: { borderColor: Colors.accentPrimary, backgroundColor: Colors.accentPrimaryDim },
-  repoOptionContent: { flex: 1 },
-  repoOptionName: { fontSize: 15, fontWeight: '600' as const, color: Colors.textPrimary },
-  repoOptionMeta: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  repoRowActive: { borderColor: Colors.accentPrimary, backgroundColor: Colors.accentPrimaryDim },
+  repoName: { fontSize: 15, fontWeight: '600', color: Colors.textPrimary },
+  repoMeta: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   commitRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: Colors.bgSecondary,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    marginBottom: Spacing.xs,
-    borderWidth: 1,
-    borderColor: Colors.borderDefault,
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10,
+    backgroundColor: Colors.bgSecondary, borderRadius: Radius.md, padding: Spacing.md,
+    marginBottom: Spacing.xs, borderWidth: 1, borderColor: Colors.borderDefault,
   },
   commitRowSelected: { borderColor: Colors.accentPrimary, backgroundColor: Colors.accentPrimaryDim },
   commitInfo: { flex: 1 },
-  commitMsg: { fontSize: 13, fontWeight: '600' as const, color: Colors.textPrimary },
-  commitMeta: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    marginTop: 2,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
+  commitMsg: { fontSize: 13, fontWeight: '600', color: Colors.textPrimary },
+  commitMeta: { fontSize: 11, color: Colors.textMuted, marginTop: 2, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   commitStats: { flexDirection: 'row', gap: 8, marginTop: 4 },
-  commitStatFiles: { fontSize: 11, color: Colors.textMuted },
-  commitStatAdd: { fontSize: 11, color: Colors.accentPrimary, fontWeight: '600' as const },
-  commitStatDel: { fontSize: 11, color: Colors.accentDanger, fontWeight: '600' as const },
-  unselectedCircle: {
-    width: 18, height: 18, borderRadius: 9,
-    borderWidth: 1, borderColor: Colors.borderDefault,
-  },
-  generateQRSection: { marginTop: Spacing.lg, gap: Spacing.sm },
-  diffSummary: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: Colors.accentPrimaryDim,
-    borderRadius: Radius.sm,
-    padding: Spacing.sm,
-  },
-  diffSummaryText: { fontSize: 12, color: Colors.accentPrimary, flex: 1 },
-  qrContainer: { alignItems: 'center' },
-  qrInfoCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    width: '100%',
-    backgroundColor: Colors.bgSecondary,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.borderDefault,
-    marginBottom: Spacing.lg,
-  },
-  qrInfoRepo: { fontSize: 14, fontWeight: '600' as const, color: Colors.textPrimary },
-  qrInfoMeta: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
-  sessionTokenBadge: { backgroundColor: Colors.bgTertiary, paddingHorizontal: 8, paddingVertical: 4, borderRadius: Radius.sm },
-  sessionTokenText: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    color: Colors.accentPrimary,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    letterSpacing: 1,
-  },
-  qrWrapper: { alignItems: 'center', justifyContent: 'center', marginVertical: Spacing.md },
-  pulseRing: {
-    position: 'absolute',
-    width: 260, height: 260,
-    borderRadius: 130,
-    backgroundColor: Colors.accentPrimaryDim,
-  },
-  qrBox: {
-    backgroundColor: Colors.bgSecondary,
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.borderDefault,
-  },
-  qrCaption: { fontSize: 13, color: Colors.textSecondary, textAlign: 'center', marginTop: Spacing.sm },
-  networkRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: Spacing.sm,
-    marginBottom: Spacing.lg,
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-  },
-  networkBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.accentPrimaryDim,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: Radius.full,
-  },
-  networkDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.accentPrimary },
-  networkText: { fontSize: 12, fontWeight: '600' as const, color: Colors.accentPrimary },
-  cancelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: Spacing.md,
-    marginTop: Spacing.md,
-  },
-  cancelRowText: { fontSize: 14, color: Colors.textMuted },
-  completeContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: Spacing.xl,
-    paddingTop: Spacing.xxl,
-  },
-  completeTitle: { fontSize: 24, fontWeight: '700' as const, color: Colors.textPrimary, marginBottom: Spacing.sm },
-  completeSubtitle: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', marginBottom: Spacing.xl },
-  completeMeta: {
-    width: '100%',
-    backgroundColor: Colors.bgSecondary,
-    borderRadius: Radius.md,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.borderDefault,
-    gap: Spacing.sm,
-  },
-  completeMetaRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  completeMetaLabel: { fontSize: 13, color: Colors.textMuted },
-  completeMetaValue: { fontSize: 13, fontWeight: '600' as const, color: Colors.textPrimary },
-  scannerWrapper: { flex: 1, position: 'relative' },
-  scannerContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, gap: Spacing.md },
-  scannerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-  },
-  scannerCutout: {
-    width: 260, height: 260,
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  corner: { position: 'absolute', width: 36, height: 36, borderColor: Colors.accentPrimary },
-  topLeft: { top: 0, left: 0, borderTopWidth: 3, borderLeftWidth: 3, borderTopLeftRadius: 8 },
-  topRight: { top: 0, right: 0, borderTopWidth: 3, borderRightWidth: 3, borderTopRightRadius: 8 },
-  bottomLeft: { bottom: 0, left: 0, borderBottomWidth: 3, borderLeftWidth: 3, borderBottomLeftRadius: 8 },
-  bottomRight: { bottom: 0, right: 0, borderBottomWidth: 3, borderRightWidth: 3, borderBottomRightRadius: 8 },
-  scannerInstruction: { marginTop: Spacing.xl, fontSize: 14, color: 'rgba(255,255,255,0.8)', textAlign: 'center' },
-  scannerCancelBtn: {
-    position: 'absolute',
-    top: Spacing.lg,
-    left: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: Radius.full,
-  },
-  scannerCancelText: { fontSize: 14, color: Colors.textPrimary },
-  permissionText: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center' },
-  cancelLink: { fontSize: 14, color: Colors.accentPrimary },
-  connectingContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.md,
-    padding: Spacing.xl,
-  },
-  connectingTitle: { fontSize: 18, fontWeight: '600' as const, color: Colors.textPrimary },
-  connectingMeta: { fontSize: 13, color: Colors.textMuted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  reviewContainer: { flex: 1 },
-  incomingBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    padding: Spacing.md,
-    backgroundColor: Colors.bgSecondary,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.borderDefault,
-  },
-  incomingTitle: { fontSize: 13, fontWeight: '600' as const, color: Colors.textPrimary },
+  statFiles: { fontSize: 11, color: Colors.textMuted },
+  statAdd: { fontSize: 11, color: Colors.accentPrimary, fontWeight: '600' },
+  statDel: { fontSize: 11, color: Colors.accentDanger, fontWeight: '600' },
+  unselCircle: { width: 17, height: 17, borderRadius: 9, borderWidth: 1, borderColor: Colors.borderDefault },
+  goSection: { marginTop: Spacing.lg, gap: Spacing.sm },
+  infoBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: Colors.accentPrimaryDim, borderRadius: Radius.sm, padding: Spacing.sm },
+  infoBannerText: { fontSize: 12, color: Colors.accentPrimary, flex: 1 },
+  centerFull: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.md, padding: Spacing.xl },
+  centerPad: { alignItems: 'center', paddingVertical: 40, gap: 8 },
+  buildingTitle: { fontSize: 18, fontWeight: '600', color: Colors.textPrimary, textAlign: 'center' },
+  buildingMeta: { fontSize: 13, color: Colors.textMuted, textAlign: 'center', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  dimText: { fontSize: 13, color: Colors.textMuted },
+  qrPanel: { alignItems: 'center', paddingTop: Spacing.md, gap: Spacing.md, paddingBottom: Spacing.md },
+  qrMethodBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.accentPrimaryDim, paddingHorizontal: 12, paddingVertical: 5, borderRadius: Radius.full },
+  qrMethodBadgeText: { fontSize: 12, fontWeight: '600', color: Colors.accentPrimary },
+  qrCard: { padding: Spacing.md, backgroundColor: Colors.bgSecondary, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.borderDefault },
+  qrPlaceholder: { alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.bgSecondary, borderRadius: Radius.md },
+  frameCounterRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  frameCounterText: { fontSize: 13, color: Colors.textSecondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  pauseBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.accentPrimaryDim, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
+  pauseBtnText: { fontSize: 12, fontWeight: '600', color: Colors.accentPrimary },
+  progressTrack: { height: 5, width: '85%', backgroundColor: Colors.borderDefault, borderRadius: Radius.full, overflow: 'hidden' },
+  progressFill: { height: '100%', backgroundColor: Colors.accentPrimary, borderRadius: Radius.full },
+  qrHint: { fontSize: 12, color: Colors.textMuted, textAlign: 'center', maxWidth: 280, lineHeight: 18 },
+  qrMeta: { backgroundColor: Colors.bgSecondary, borderRadius: Radius.md, padding: Spacing.md, borderWidth: 1, borderColor: Colors.borderDefault, width: '100%', gap: 4 },
+  qrMetaItem: { fontSize: 13, color: Colors.textSecondary },
+  tokenBox: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: Colors.bgSecondary, borderRadius: Radius.md, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderWidth: 1, borderColor: Colors.accentPrimary },
+  tokenText: { fontSize: 24, fontWeight: '700', letterSpacing: 5, color: Colors.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  liveStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  liveStatusText: { fontSize: 14, color: Colors.textSecondary, fontWeight: '500' },
+  cancelBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.lg, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.accentDanger },
+  cancelBtnText: { fontSize: 14, fontWeight: '600', color: Colors.accentDanger },
+  doneCard: { alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, paddingTop: Spacing.xxl },
+  doneTitle: { fontSize: 24, fontWeight: '700', color: Colors.textPrimary, marginBottom: Spacing.sm },
+  doneSub: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', marginBottom: Spacing.xl },
+  doneMeta: { width: '100%', backgroundColor: Colors.bgSecondary, borderRadius: Radius.md, padding: Spacing.md, borderWidth: 1, borderColor: Colors.borderDefault, gap: Spacing.sm },
+  doneMetaRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  doneMetaLabel: { fontSize: 13, color: Colors.textMuted },
+  doneMetaValue: { fontSize: 13, fontWeight: '600', color: Colors.textPrimary },
+  receivePanel: { alignItems: 'center', paddingTop: Spacing.xl, paddingHorizontal: Spacing.sm, gap: Spacing.md },
+  receiveIllo: { width: 96, height: 96, borderRadius: 48, backgroundColor: Colors.accentPrimaryDim, alignItems: 'center', justifyContent: 'center' },
+  receiveTitle: { fontSize: 22, fontWeight: '700', color: Colors.textPrimary, textAlign: 'center' },
+  receiveSub: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22 },
+  offlineBadgeRow: { flexDirection: 'row', gap: Spacing.xs, flexWrap: 'wrap', justifyContent: 'center' },
+  offlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.accentPrimaryDim, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
+  offlineBadgeText: { fontSize: 11, fontWeight: '600', color: Colors.accentPrimary },
+  methodsRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center' },
+  methodPill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.accentPrimaryDim, paddingHorizontal: 10, paddingVertical: 4, borderRadius: Radius.full },
+  methodPillText: { fontSize: 11, fontWeight: '600', color: Colors.accentPrimary },
+  relayInputGroup: { width: '100%', gap: Spacing.xs },
+  relayInputLabel: { fontSize: 12, color: Colors.textMuted, fontWeight: '600', letterSpacing: 0.4, textTransform: 'uppercase' },
+  relayInputRow: { flexDirection: 'row', gap: Spacing.sm, alignItems: 'center' },
+  relayInput: { flex: 1, height: 52, backgroundColor: Colors.bgSecondary, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.borderDefault, paddingHorizontal: Spacing.md, fontSize: 22, fontWeight: '700', letterSpacing: 4, color: Colors.textPrimary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', textAlign: 'center' },
+  joinBtn: { height: 52, paddingHorizontal: Spacing.lg, backgroundColor: Colors.accentPrimary, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
+  joinBtnOff: { opacity: 0.35 },
+  joinBtnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  orRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, width: '100%' },
+  orLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: Colors.borderDefault },
+  orText: { fontSize: 12, color: Colors.textMuted },
+  scannerWrapper: { flex: 1, backgroundColor: '#000' },
+  scannerCamera: { flex: 1 },
+  scanOverlayBorder: { position: 'absolute', top: '20%', left: '10%', right: '10%', bottom: '30%', borderWidth: 2, borderColor: Colors.accentPrimary, borderRadius: Radius.lg },
+  scanTopBar: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', padding: Spacing.md, paddingTop: Spacing.lg, backgroundColor: 'rgba(0,0,0,0.55)' },
+  scanCloseBtn: { width: 32 },
+  scanTopTitle: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  scanTopSub: { fontSize: 11, color: 'rgba(255,255,255,0.7)', marginTop: 2, textAlign: 'center' },
+  scanBottomBar: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: Spacing.md, paddingBottom: Spacing.xl, backgroundColor: 'rgba(0,0,0,0.7)', gap: 8 },
+  scanProgressText: { fontSize: 14, fontWeight: '600', color: '#fff' },
+  scanMissingText: { fontSize: 11, color: 'rgba(255,255,255,0.5)', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  frameDots: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
+  frameDot: { width: 10, height: 10, borderRadius: 5 },
+  frameDotDone: { backgroundColor: Colors.accentPrimary },
+  frameDotPending: { backgroundColor: 'rgba(255,255,255,0.25)' },
+  frameDotsMore: { fontSize: 11, color: 'rgba(255,255,255,0.5)', alignSelf: 'center' },
+  reviewWrapper: { flex: 1 },
+  incomingBar: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: Spacing.md, backgroundColor: Colors.bgSecondary, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.borderDefault },
+  incomingTitle: { fontSize: 13, fontWeight: '600', color: Colors.textPrimary },
   incomingMeta: { fontSize: 11, color: Colors.textMuted, marginTop: 1 },
-  connectedPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.accentPrimaryDim,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: Radius.full,
-  },
-  connectedDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.accentPrimary },
-  connectedText: { fontSize: 11, color: Colors.accentPrimary, fontWeight: '600' as const },
-  reviewActions: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    padding: Spacing.md,
-    backgroundColor: Colors.bgSecondary,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.borderDefault,
-  },
-  rejectBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    flex: 1,
-    padding: Spacing.md,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.accentDanger,
-  },
-  rejectBtnText: { fontSize: 14, fontWeight: '600' as const, color: Colors.accentDanger },
-  acceptBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    flex: 2,
-    padding: Spacing.md,
-    borderRadius: Radius.md,
-    backgroundColor: Colors.accentPrimary,
-  },
-  acceptBtnText: { fontSize: 14, fontWeight: '700' as const, color: '#fff' },
+  receivedPill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.accentPrimaryDim, paddingHorizontal: 8, paddingVertical: 3, borderRadius: Radius.full },
+  receivedDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.accentPrimary },
+  receivedPillText: { fontSize: 11, color: Colors.accentPrimary, fontWeight: '600' },
+  reviewActions: { flexDirection: 'row', gap: Spacing.sm, padding: Spacing.md, backgroundColor: Colors.bgSecondary, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.borderDefault },
+  rejectBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, flex: 1, padding: Spacing.md, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.accentDanger },
+  rejectText: { fontSize: 14, fontWeight: '600', color: Colors.accentDanger },
+  acceptBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, flex: 2, padding: Spacing.md, borderRadius: Radius.md, backgroundColor: Colors.accentPrimary },
+  acceptText: { fontSize: 14, fontWeight: '700', color: '#fff' },
 });

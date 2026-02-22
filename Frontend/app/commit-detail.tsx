@@ -1,21 +1,42 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { X, GitBranch, Clock, User, Mail, FileCode2, Plus, Minus } from 'lucide-react-native';
+import { X, GitBranch, Clock, FileCode2, Plus, Minus } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Spacing, Radius } from '@/constants/theme';
 import { useGit } from '@/contexts/GitContext';
 import { getAuthorColor, getAuthorInitials } from '@/mocks/repositories';
 import StatusBadge from '@/components/StatusBadge';
+import DiffViewer from '@/components/DiffViewer';
+import { buildLocalDiffFiles } from '@/services/p2p/p2pService';
+import type { DiffFile } from '@/services/p2p/p2pService';
 
 export default function CommitDetailModal() {
   const { sha } = useLocalSearchParams<{ sha: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { commits } = useGit();
+  const { commits, selectedRepoId } = useGit();
+
+  const [diffFiles, setDiffFiles] = useState<DiffFile[]>([]);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
 
   const commit = commits.find(c => c.sha === sha);
+
+  useEffect(() => {
+    if (!sha || !selectedRepoId) return;
+    setDiffLoading(true);
+    setDiffError(null);
+    buildLocalDiffFiles(selectedRepoId, [sha])
+      .then(files => {
+        setDiffFiles(files);
+      })
+      .catch(err => {
+        setDiffError(err instanceof Error ? err.message : 'Failed to load diff');
+      })
+      .finally(() => setDiffLoading(false));
+  }, [sha, selectedRepoId]);
 
   if (!commit) {
     return (
@@ -123,6 +144,27 @@ export default function CommitDetailModal() {
             ))}
           </View>
         )}
+
+        {/* ── Diff section ── */}
+        <View style={styles.diffSection}>
+          <Text style={styles.filesSectionTitle}>DIFF</Text>
+          {diffLoading ? (
+            <View style={styles.diffLoadingRow}>
+              <ActivityIndicator size="small" color={Colors.accentPrimary} />
+              <Text style={styles.diffLoadingText}>Loading diff…</Text>
+            </View>
+          ) : diffError ? (
+            <View style={styles.diffErrorRow}>
+              <Text style={styles.diffErrorText}>{diffError}</Text>
+            </View>
+          ) : diffFiles.length === 0 ? (
+            <View style={styles.diffErrorRow}>
+              <Text style={styles.diffLoadingText}>No diff available</Text>
+            </View>
+          ) : (
+            <DiffViewer files={diffFiles} />
+          )}
+        </View>
 
         {commit.parents.length > 0 && (
           <View style={styles.parentsSection}>
@@ -363,5 +405,33 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.textSecondary,
     fontFamily: 'monospace',
+  },
+  diffSection: {
+    marginBottom: Spacing.md,
+  },
+  diffLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: Spacing.md,
+    backgroundColor: Colors.bgSecondary,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.borderDefault,
+  },
+  diffLoadingText: {
+    fontSize: 13,
+    color: Colors.textMuted,
+  },
+  diffErrorRow: {
+    padding: Spacing.md,
+    backgroundColor: Colors.bgSecondary,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.borderDefault,
+  },
+  diffErrorText: {
+    fontSize: 13,
+    color: Colors.accentDanger,
   },
 });
