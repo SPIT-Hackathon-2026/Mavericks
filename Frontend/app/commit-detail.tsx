@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { X, GitBranch, Clock, FileCode2, Plus, Minus } from 'lucide-react-native';
+import { X, GitBranch, Clock, FileCode2, Plus, Minus, RotateCcw } from 'lucide-react-native';
 import Colors from '@/constants/colors';
 import { Spacing, Radius } from '@/constants/theme';
 import { useGit } from '@/contexts/GitContext';
@@ -16,11 +16,12 @@ export default function CommitDetailModal() {
   const { sha } = useLocalSearchParams<{ sha: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { commits, selectedRepoId } = useGit();
+  const { commits, selectedRepoId, revertToCommit } = useGit();
 
   const [diffFiles, setDiffFiles] = useState<DiffFile[]>([]);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
+  const [reverting, setReverting] = useState(false);
 
   const commit = commits.find(c => c.sha === sha);
 
@@ -176,6 +177,46 @@ export default function CommitDetailModal() {
             ))}
           </View>
         )}
+
+        {/* Revert to this commit button */}
+        <TouchableOpacity
+          style={[styles.revertButton, reverting && styles.revertButtonDisabled]}
+          activeOpacity={0.7}
+          disabled={reverting}
+          onPress={() => {
+            Alert.alert(
+              'Revert to this commit?',
+              `This will create a new commit that restores the working tree to the state of ${commit.shortSha}. Your current changes will be committed as a revert.\n\nThis action is non-destructive — full history is preserved.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Revert',
+                  style: 'destructive',
+                  onPress: async () => {
+                    setReverting(true);
+                    try {
+                      await revertToCommit(commit.sha);
+                      router.back();
+                    } catch {
+                      // Toast already shown by context
+                    } finally {
+                      setReverting(false);
+                    }
+                  },
+                },
+              ],
+            );
+          }}
+        >
+          {reverting ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <RotateCcw size={18} color="#fff" />
+          )}
+          <Text style={styles.revertButtonText}>
+            {reverting ? 'Reverting...' : 'Revert to this commit'}
+          </Text>
+        </TouchableOpacity>
 
         <View style={{ height: 60 }} />
       </ScrollView>
@@ -433,5 +474,24 @@ const styles = StyleSheet.create({
   diffErrorText: {
     fontSize: 13,
     color: Colors.accentDanger,
+  },
+  revertButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: Colors.accentDanger,
+    borderRadius: Radius.md,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    marginTop: Spacing.lg,
+  },
+  revertButtonDisabled: {
+    opacity: 0.6,
+  },
+  revertButtonText: {
+    fontSize: 15,
+    fontWeight: '700' as const,
+    color: '#FFFFFF',
   },
 });
