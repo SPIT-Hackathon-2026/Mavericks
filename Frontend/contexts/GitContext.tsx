@@ -571,15 +571,48 @@ export const [GitProvider, useGit] = createContextHook(() => {
         queryClient.invalidateQueries({ queryKey: ["repositories"] });
         queryClient.invalidateQueries({ queryKey: ["files", mergeState.repoId] });
         queryClient.invalidateQueries({ queryKey: ["commits", mergeState.repoId] });
+
+        const mergedBranch = mergeState.oursBranch;
+        const mergedRepoId = mergeState.repoId;
+        const mergedRepoName =
+          repositoriesQuery.data?.find((r) => r.id === mergedRepoId)?.name ?? mergedRepoId;
+
         setMergeState(null);
         setConflicts([]);
-        showToast("success", `Merge completed: ${mergeState.theirsBranch} → ${mergeState.oursBranch}`);
+        showToast("success", `Merge completed: ${mergeState.theirsBranch} → ${mergedBranch}`);
+
+        // ── Auto-push after successful merge ──
+        if (!settings.githubToken) {
+          console.log(TAG, "No GitHub token — skipping post-merge push");
+        } else {
+          const online = await pushQueue.isOnline();
+          if (online) {
+            try {
+              console.log(TAG, `Post-merge push → origin/${mergedBranch}`);
+              showToast("info", `Pushing merged changes to origin/${mergedBranch}…`);
+              await gitEngine.push(mergedRepoId, settings.githubToken, mergedBranch, author);
+              queryClient.invalidateQueries({ queryKey: ["commits", mergedRepoId] });
+              showToast("success", `Pushed merged changes to origin/${mergedBranch}`);
+            } catch (pushErr) {
+              const pushMsg = pushErr instanceof Error ? pushErr.message : "Push failed";
+              console.warn(TAG, "Post-merge push failed:", pushMsg);
+              // Push failed online — queue it so it retries later
+              await pushQueue.enqueue(mergedRepoId, mergedRepoName, mergedBranch);
+              showToast("warning", `Push failed — queued for retry: ${pushMsg}`);
+            }
+          } else {
+            // Offline — enqueue push for when connectivity returns
+            console.log(TAG, "Offline — queueing post-merge push");
+            await pushQueue.enqueue(mergedRepoId, mergedRepoName, mergedBranch);
+            showToast("info", `Offline — push queued for origin/${mergedBranch}`);
+          }
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Finalize merge failed";
         showToast("error", message);
       }
     },
-    [mergeState, settings.userConfig, queryClient],
+    [mergeState, settings.userConfig, settings.githubToken, queryClient, repositoriesQuery.data],
   );
 
   const abortMerge = useCallback(

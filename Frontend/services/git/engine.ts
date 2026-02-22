@@ -352,15 +352,52 @@ export class GitEngine {
           mergeClean = true;
         }
       } catch (mergeErr: any) {
-        if (
+        const isConflict =
           mergeErr?.code === 'MergeConflictError' ||
           mergeErr?.code === 'MergeNotSupportedError' ||
-          (mergeErr?.message && mergeErr.message.includes('onflict'))
-        ) {
+          (mergeErr?.message && mergeErr.message.includes('onflict'));
+        const isUnmerged =
+          mergeErr?.code === 'UnmergedPathsError' ||
+          (mergeErr?.message && mergeErr.message.includes('nmerged'));
+
+        if (isConflict) {
           console.log(TAG, `push→merge detected conflicts — entering resolution mode`);
           const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
           return conflictResult;
         }
+
+        if (isUnmerged) {
+          // Leftover unmerged entries from a previous merge — force-checkout to clean up, then retry
+          console.warn(TAG, `push→merge hit UnmergedPathsError — cleaning up & retrying`);
+          try {
+            await git.checkout({ fs, dir, ref, force: true });
+            try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_HEAD')); } catch {}
+            try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_MSG')); } catch {}
+
+            const retryResult = await git.merge({
+              fs, dir, ours: ref, theirs: theirRef,
+              author: mergeAuthor, abortOnConflict: false,
+            });
+            if (retryResult.oid && !retryResult.alreadyMerged) {
+              await git.checkout({ fs, dir, ref, force: true });
+              // Retry push after clean merge
+              await git.push({
+                fs, http, dir, remote: 'origin', ref,
+                onAuth: () => ({ username: token, password: '' }),
+              });
+              await completeTx(dir, txId);
+              await deleteGitCache(dir);
+              console.log(TAG, `push COMPLETE (after unmerged cleanup) -> ${repoId} (${ref})`);
+              return { clean: true };
+            }
+            // Still has conflicts after retry
+            const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+            return conflictResult;
+          } catch (cleanupErr) {
+            console.error(TAG, `push→merge cleanup retry also failed`, cleanupErr);
+          }
+        }
+
         await failTx(dir, txId);
         console.error(TAG, `push→merge FAILED -> ${repoId}`, mergeErr);
         throw mergeErr;
@@ -456,13 +493,16 @@ export class GitEngine {
           mergeClean = true;
         }
       } catch (mergeErr: any) {
-        if (
+        const isConflict =
           mergeErr?.code === 'MergeConflictError' ||
           mergeErr?.code === 'MergeNotSupportedError' ||
-          (mergeErr?.message && mergeErr.message.includes('onflict'))
-        ) {
+          (mergeErr?.message && mergeErr.message.includes('onflict'));
+        const isUnmerged =
+          mergeErr?.code === 'UnmergedPathsError' ||
+          (mergeErr?.message && mergeErr.message.includes('nmerged'));
+
+        if (isConflict) {
           console.log(TAG, `pull→merge detected conflicts — entering resolution mode`);
-          // Update tx for crash recovery
           await appendTx(dir, {
             id: txId,
             type: "merge",
@@ -472,7 +512,47 @@ export class GitEngine {
           });
           return await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
         }
-        throw mergeErr; // re-throw non-conflict errors to outer catch
+
+        if (isUnmerged) {
+          // Leftover unmerged entries from a previous merge — clean up & retry
+          console.warn(TAG, `pull→merge hit UnmergedPathsError — cleaning up & retrying`);
+          try {
+            await git.checkout({ fs, dir, ref, force: true });
+            try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_HEAD')); } catch {}
+            try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_MSG')); } catch {}
+
+            const retryResult = await git.merge({
+              fs, dir, ours: ref, theirs: theirRef,
+              author: mergeAuthor, abortOnConflict: false,
+            });
+            if (retryResult.oid && !retryResult.alreadyMerged) {
+              await git.checkout({ fs, dir, ref, force: true });
+              mergeClean = true;
+            } else if (retryResult.alreadyMerged) {
+              mergeClean = true;
+            }
+            // If still not clean, fall through to the !mergeClean check below
+          } catch (cleanupErr: any) {
+            const isRetryConflict =
+              cleanupErr?.code === 'MergeConflictError' ||
+              cleanupErr?.code === 'MergeNotSupportedError' ||
+              (cleanupErr?.message && cleanupErr.message.includes('onflict'));
+            if (isRetryConflict) {
+              console.log(TAG, `pull→merge retry detected conflicts`);
+              await appendTx(dir, {
+                id: txId, type: "merge", status: "PENDING",
+                message: `MERGE_IN_PROGRESS: ${ref} <- ${theirRef} (pull)`,
+                startedAt: Date.now(),
+              });
+              return await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+            }
+            throw cleanupErr;
+          }
+        }
+
+        if (!isConflict && !isUnmerged) {
+          throw mergeErr; // re-throw non-conflict/non-unmerged errors to outer catch
+        }
       }
 
       if (!mergeClean) {
@@ -1183,14 +1263,57 @@ export class GitEngine {
 
       return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
     } catch (err: any) {
-      if (
+      const isConflict =
         err?.code === 'MergeConflictError' ||
         err?.code === 'MergeNotSupportedError' ||
-        (err?.message && err.message.includes('onflict'))
-      ) {
+        (err?.message && err.message.includes('onflict'));
+      const isUnmerged =
+        err?.code === 'UnmergedPathsError' ||
+        (err?.message && err.message.includes('nmerged'));
+
+      if (isConflict) {
         console.log(TAG, `merge detected conflicts — entering resolution mode`);
         return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
       }
+
+      if (isUnmerged) {
+        // Leftover unmerged entries — force-checkout to clean, then retry
+        console.warn(TAG, `merge hit UnmergedPathsError — cleaning up & retrying`);
+        try {
+          await git.checkout({ fs, dir, ref: current, force: true });
+          try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_HEAD')); } catch {}
+          try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_MSG')); } catch {}
+
+          const retryResult = await git.merge({
+            fs, dir, ours: current, theirs: theirBranch,
+            author, abortOnConflict: false,
+          });
+          if (retryResult.oid && !retryResult.alreadyMerged) {
+            await git.checkout({ fs, dir, ref: current });
+            await completeTx(dir, txId);
+            await deleteGitCache(dir);
+            console.log(TAG, `merge COMPLETED cleanly after cleanup (txId=${txId})`);
+            return { clean: true };
+          }
+          if (retryResult.alreadyMerged) {
+            await completeTx(dir, txId);
+            return { clean: true };
+          }
+          return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
+        } catch (cleanupErr: any) {
+          const isRetryConflict =
+            cleanupErr?.code === 'MergeConflictError' ||
+            cleanupErr?.code === 'MergeNotSupportedError' ||
+            (cleanupErr?.message && cleanupErr.message.includes('onflict'));
+          if (isRetryConflict) {
+            return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
+          }
+          await failTx(dir, txId);
+          console.error(TAG, `merge cleanup retry FAILED (txId=${txId})`, cleanupErr);
+          throw cleanupErr;
+        }
+      }
+
       await failTx(dir, txId);
       console.error(TAG, `merge FAILED (txId=${txId})`, err);
       throw err;
@@ -1348,12 +1471,30 @@ export class GitEngine {
   }
 
   /**
+   * Clear unmerged (multi-stage) entries from the git index for given files.
+   * isomorphic-git's git.add() does NOT remove stage 1/2/3 entries — we must
+   * git.remove() first so the subsequent git.add() writes a clean stage-0.
+   */
+  private async clearUnmergedEntries(dir: string, filepaths: string[]): Promise<void> {
+    for (const filepath of filepaths) {
+      try {
+        await git.remove({ fs, dir, filepath });
+        console.log(TAG, `clearUnmergedEntries → removed index entries for ${filepath}`);
+      } catch (rmErr) {
+        console.warn(TAG, `clearUnmergedEntries → git.remove failed for ${filepath}`, rmErr);
+      }
+    }
+  }
+
+  /**
    * Stage a resolved conflict file.
    */
   async stageResolvedFile(repoId: string, filepath: string, resolvedContent: string): Promise<void> {
     const dir = this.resolveRepoDir(repoId);
     const fullPath = joinPath(dir, filepath);
     await fs.promises.writeFile(fullPath, resolvedContent, 'utf8');
+    // Must remove first to clear any multi-stage (unmerged) index entries
+    await this.clearUnmergedEntries(dir, [filepath]);
     await git.add({ fs, dir, filepath });
     console.log(TAG, `stageResolvedFile(${repoId}) → ${filepath}`);
   }
@@ -1373,46 +1514,72 @@ export class GitEngine {
     const current =
       (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
 
-    // If the caller provides resolved files, stage them all first
+    // ── 1. Capture merge parent oids BEFORE we touch the index ──
+    const headOid = await git.resolveRef({ fs, dir, ref: 'HEAD' });
+    let theirOid: string | null = null;
+    try {
+      theirOid = await git.resolveRef({ fs, dir, ref: theirBranch });
+    } catch {
+      // Fallback: read .git/MERGE_HEAD written by git.merge({ abortOnConflict:false })
+      try {
+        const raw = (await fs.promises.readFile(
+          joinPath(dir, '.git', 'MERGE_HEAD'), 'utf8'
+        )) as string;
+        theirOid = raw.trim();
+      } catch { /* no MERGE_HEAD — single-parent commit */ }
+    }
+    console.log(TAG, `finalizeMerge → HEAD=${headOid.slice(0,8)}, theirs=${theirOid?.slice(0,8) ?? 'none'}`);
+
+    // ── 2. Build resolved content for each conflicted file IN MEMORY ──
+    const resolvedContents: { path: string; content: string }[] = [];
     if (resolvedFiles && resolvedFiles.length > 0) {
       for (const file of resolvedFiles) {
         const fullPath = joinPath(dir, file.path);
         try {
           const rawContent = (await fs.promises.readFile(fullPath, 'utf8')) as string;
-          const resolvedContent = this.buildResolvedContent(rawContent, file.hunks);
-          await fs.promises.writeFile(fullPath, resolvedContent, 'utf8');
-          await git.add({ fs, dir, filepath: file.path });
-          console.log(TAG, `finalizeMerge → staged ${file.path}`);
+          const content = this.buildResolvedContent(rawContent, file.hunks);
+          resolvedContents.push({ path: file.path, content });
         } catch (err) {
-          console.warn(TAG, `finalizeMerge → failed to stage ${file.path}`, err);
+          console.warn(TAG, `finalizeMerge → failed to read ${file.path}`, err);
         }
       }
     }
 
-    // Also re-add any files that still appear unmerged in the index
-    try {
-      const statusMatrix = await git.statusMatrix({ fs, dir });
-      for (const [filepath, , , stage] of statusMatrix) {
-        if (filepath.startsWith('.git/')) continue;
-        // stage 3 = unmerged; stage 2 = modified but not added
-        if (stage === 3 || stage === 2) {
-          try {
-            await git.add({ fs, dir, filepath });
-            console.log(TAG, `finalizeMerge → re-staged unmerged file: ${filepath}`);
-          } catch (addErr) {
-            console.warn(TAG, `finalizeMerge → could not re-add ${filepath}`, addErr);
-          }
-        }
-      }
-    } catch (statusErr) {
-      console.warn(TAG, `finalizeMerge → statusMatrix check failed`, statusErr);
+    // ── 3. Force-checkout to clear ALL unmerged (multi-stage) index entries ──
+    //    isomorphic-git's git.add() does NOT remove stage 1/2/3 entries,
+    //    so git.commit() always fails with UnmergedPathsError.
+    //    A force-checkout resets the index & working-tree to HEAD.
+    console.log(TAG, `finalizeMerge → force checkout "${current}" to clear unmerged index`);
+    await git.checkout({ fs, dir, ref: current, force: true });
+
+    // ── 4. Write resolved content back to disk (overwrites the clean checkout) ──
+    for (const { path, content } of resolvedContents) {
+      const fullPath = joinPath(dir, path);
+      await fs.promises.writeFile(fullPath, content, 'utf8');
+      console.log(TAG, `finalizeMerge → wrote resolved ${path} (${content.length} chars)`);
     }
 
+    // ── 5. Stage every resolved file (index is now clean — no multi-stage) ──
+    for (const { path } of resolvedContents) {
+      await git.add({ fs, dir, filepath: path });
+      console.log(TAG, `finalizeMerge → staged ${path}`);
+    }
+
+    // ── 6. Commit as a merge commit with both parents ──
     const message = `Merge branch '${theirBranch}' into ${current}`;
-    await git.commit({ fs, dir, message, author, committer: author });
+    const parents = theirOid ? [headOid, theirOid] : [headOid];
+    await git.commit({
+      fs, dir, message, author, committer: author,
+      parent: parents,
+    });
+
+    // ── 7. Clean up leftover merge-state files ──
+    try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_HEAD')); } catch {}
+    try { await fs.promises.unlink(joinPath(dir, '.git', 'MERGE_MSG')); } catch {}
+
     await completeTx(dir, txId);
     await deleteGitCache(dir);
-    console.log(TAG, `finalizeMerge COMPLETED — merged ${theirBranch} into ${current}`);
+    console.log(TAG, `finalizeMerge COMPLETED — merged ${theirBranch} into ${current} (parents: ${parents.map(p => p.slice(0,8)).join(', ')})`);
   }
 
   /**
@@ -1455,6 +1622,12 @@ export class GitEngine {
    * Rebuild a file from its content with conflict markers, applying resolutions.
    */
   buildResolvedContent(rawContent: string, hunks: ConflictHunk[]): string {
+    // If no conflict markers in the file, return as-is
+    if (!rawContent.includes('<<<<<<<') || !rawContent.includes('>>>>>>>')) {
+      console.log(TAG, 'buildResolvedContent → no conflict markers found, returning as-is');
+      return rawContent;
+    }
+
     const lines = rawContent.split('\n');
     const result: string[] = [];
     let lineIdx = 0;
@@ -1463,17 +1636,33 @@ export class GitEngine {
     while (lineIdx < lines.length) {
       if (lines[lineIdx].startsWith('<<<<<<<') && hunkIdx < hunks.length) {
         const hunk = hunks[hunkIdx++];
+        // Skip everything between <<<<<<< and >>>>>>>
         while (lineIdx < lines.length && !lines[lineIdx].startsWith('>>>>>>>')) {
           lineIdx++;
         }
-        if (lineIdx < lines.length) lineIdx++;
-        result.push(hunk.resultContent);
+        if (lineIdx < lines.length) lineIdx++; // skip the >>>>>>> line
+
+        // Insert the resolved content (may be multi-line)
+        if (hunk.resultContent) {
+          result.push(hunk.resultContent);
+        }
       } else {
         result.push(lines[lineIdx]);
         lineIdx++;
       }
     }
-    return result.join('\n');
+
+    const output = result.join('\n');
+
+    // Safety check: verify no conflict markers remain
+    if (output.includes('<<<<<<<') || output.includes('>>>>>>>')) {
+      console.warn(TAG, 'buildResolvedContent → WARNING: conflict markers still present after resolution!');
+      console.warn(TAG, `  hunks provided: ${hunks.length}, hunks consumed: ${hunkIdx}`);
+    } else {
+      console.log(TAG, `buildResolvedContent → clean output (${output.length} chars, ${hunkIdx} hunks resolved)`);
+    }
+
+    return output;
   }
 
 
