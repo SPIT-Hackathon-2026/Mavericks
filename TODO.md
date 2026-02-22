@@ -83,9 +83,7 @@ Local Socket (Hardest),High,"Use react-native-tcp-socket to create a mini-server
 
 Merge Conflict hard
 Create Branch hard
-p2p transfer online git api
-Notification easy
-Offline Agent easy-medium
+p2p transfer
 Offline Code editor medium-hard
 
 
