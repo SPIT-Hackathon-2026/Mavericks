@@ -241,11 +241,39 @@ export default function FileViewer() {
   );
   const [content, setContent] = useState(initialContent);
   const [editContent, setEditContent] = useState(initialContent);
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [copied, setCopied] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
   const [toastVisible, setToastVisible] = useState(false);
   const [lintError, setLintError] = useState<string | null>(null);
+
+  // ── Load file content directly from disk if not passed via params ──
+  // This fixes the issue where cloned repo file contents are empty/truncated
+  // when passed through URL search params.
+  React.useEffect(() => {
+    async function loadContent() {
+      if (content && content.length > 0) return; // Already have content
+      if (!selectedRepo || !filePath) return;
+
+      setIsLoadingContent(true);
+      try {
+        const relPath = filePath.replace(/^\//, '');
+        const fullPath = `${selectedRepo.path}/${relPath}`;
+        const fileContent = (await expoFS.promises.readFile(fullPath, { encoding: 'utf8' })) as string;
+        if (fileContent && fileContent.length > 0) {
+          setContent(fileContent);
+          setEditContent(fileContent);
+          console.log(`[FileViewer] Loaded content from disk: ${relPath} (${fileContent.length} chars)`);
+        }
+      } catch (err) {
+        console.warn('[FileViewer] Failed to load content from disk:', err);
+      } finally {
+        setIsLoadingContent(false);
+      }
+    }
+    loadContent();
+  }, [selectedRepo, filePath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // tree drawer
   const [treeOpen, setTreeOpen] = useState(false);
@@ -372,8 +400,18 @@ export default function FileViewer() {
   }, []);
 
   const handleSelectFile = useCallback(
-    (file: GitFile) => {
-      const c = file.content ?? "";
+    async (file: GitFile) => {
+      let c = file.content ?? "";
+      // If content is empty, try reading from disk
+      if (!c && selectedRepo && file.path) {
+        try {
+          const relPath = file.path.replace(/^\//, '');
+          const fullPath = `${selectedRepo.path}/${relPath}`;
+          c = (await expoFS.promises.readFile(fullPath, { encoding: 'utf8' })) as string;
+        } catch {
+          c = "";
+        }
+      }
       setFileName(file.name);
       setFileExt(file.extension ?? "");
       setFilePath(file.path);
@@ -385,7 +423,7 @@ export default function FileViewer() {
       if (Platform.OS !== "web")
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     },
-    [closeTree]
+    [closeTree, selectedRepo]
   );
 
   const { stageFile, unstageFile } = useGit();
@@ -632,6 +670,17 @@ export default function FileViewer() {
       >
         {mode === "view" ? (
           /* ── View mode ── */
+          isLoadingContent ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: Colors.textMuted, fontSize: 14 }}>Loading file content…</Text>
+            </View>
+          ) : content.length === 0 ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+              <Text style={{ color: Colors.textMuted, fontSize: 14, textAlign: 'center' }}>
+                No content to display. The file may be empty or binary.
+              </Text>
+            </View>
+          ) : (
           <ScrollView
             style={styles.codeScroll}
             showsVerticalScrollIndicator
@@ -654,6 +703,7 @@ export default function FileViewer() {
               </View>
             </ScrollView>
           </ScrollView>
+          )
         ) : (
           /* ── Edit mode ── */
           <View style={styles.editOuter}>

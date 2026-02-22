@@ -6,6 +6,7 @@
     "start": "bunx rork start -p 1ukb2kg5ytx9089p30ffh --tunnel",
     "start-web": "bunx rork start -p 1ukb2kg5ytx9089p30ffh --web --tunnel",
     "start-web-dev": "DEBUG=expo* bunx rork start -p 1ukb2kg5ytx9089p30ffh --web --tunnel",
+    "test": "jest --verbose",
     "lint": "expo lint",
     "android": "expo run:android",
     "ios": "expo run:ios"

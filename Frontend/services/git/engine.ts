@@ -1,9 +1,12 @@
 import type {
     ChangeType,
+    ConflictFile,
+    ConflictHunk,
     FileStatus,
     GitBranch,
     GitCommit,
     GitFile,
+    MergeState,
     Repository,
 } from "@/types/git";
 import git from "isomorphic-git";
@@ -46,7 +49,7 @@ const TAG = "[GitEngine]";
 
 export interface TransactionEntry {
   id: string;
-  type: "commit" | "merge" | "branch" | "clone" | "pull";
+  type: "commit" | "merge" | "branch" | "clone" | "pull" | "push";
   status: "PENDING" | "COMPLETED" | "FAILED";
   message?: string;
   startedAt: number;
@@ -245,7 +248,12 @@ export class GitEngine {
     }
   }
 
-  async push(repoId: string, token: string, branch?: string): Promise<void> {
+  async push(
+    repoId: string,
+    token: string,
+    branch?: string,
+    author?: { name: string; email: string },
+  ): Promise<{ clean: true } | { clean: false; mergeState: MergeState }> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
 
@@ -264,7 +272,7 @@ export class GitEngine {
     const txId = randomId();
     await appendTx(dir, {
       id: txId,
-      type: "pull",
+      type: "push",
       status: "PENDING",
       message: `push ${ref}`,
       startedAt: Date.now(),
@@ -281,10 +289,110 @@ export class GitEngine {
       await completeTx(dir, txId);
       await deleteGitCache(dir);
       console.log(TAG, `push COMPLETE -> ${repoId} (${ref})`);
-    } catch (err) {
-      await failTx(dir, txId);
-      console.error(TAG, `push FAILED -> ${repoId}`, err);
-      throw err;
+      return { clean: true };
+    } catch (err: any) {
+      // ── PushRejectedError: remote has diverged — pull first, then retry ──
+      const isPushRejected =
+        err?.code === 'PushRejectedError' ||
+        (err?.message && err.message.includes('not a simple fast-forward'));
+
+      if (!isPushRejected) {
+        await failTx(dir, txId);
+        console.error(TAG, `push FAILED -> ${repoId}`, err);
+        throw err;
+      }
+
+      console.log(TAG, `push rejected (not fast-forward) — pulling first, then retrying…`);
+
+      // 1. Fetch remote changes
+      try {
+        await git.fetch({
+          fs,
+          http,
+          dir,
+          remote: "origin",
+          ref,
+          singleBranch: true,
+          onAuth: () => ({ username: token, password: "" }),
+        });
+      } catch (fetchErr) {
+        await failTx(dir, txId);
+        console.error(TAG, `push→fetch FAILED -> ${repoId}`, fetchErr);
+        throw fetchErr;
+      }
+
+      // 2. Merge remote into local (with conflict detection)
+      const mergeAuthor = author ?? { name: "GitLane User", email: "user@gitlane.app" };
+      const theirRef = `remotes/origin/${ref}`;
+
+      // Update the tx message so RecoveryAlert can detect merge-in-progress
+      await appendTx(dir, {
+        id: txId,
+        type: "merge",
+        status: "PENDING",
+        message: `MERGE_IN_PROGRESS: ${ref} <- ${theirRef} (push sync)`,
+        startedAt: Date.now(),
+      });
+
+      let mergeClean = false;
+      try {
+        const mergeResult = await git.merge({
+          fs,
+          dir,
+          ours: ref,
+          theirs: theirRef,
+          author: mergeAuthor,
+          abortOnConflict: false,
+        });
+
+        if (mergeResult.oid && !mergeResult.alreadyMerged) {
+          await git.checkout({ fs, dir, ref, force: true });
+          mergeClean = true;
+        } else if (mergeResult.alreadyMerged) {
+          mergeClean = true;
+        }
+      } catch (mergeErr: any) {
+        if (
+          mergeErr?.code === 'MergeConflictError' ||
+          mergeErr?.code === 'MergeNotSupportedError' ||
+          (mergeErr?.message && mergeErr.message.includes('onflict'))
+        ) {
+          console.log(TAG, `push→merge detected conflicts — entering resolution mode`);
+          const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+          return conflictResult;
+        }
+        await failTx(dir, txId);
+        console.error(TAG, `push→merge FAILED -> ${repoId}`, mergeErr);
+        throw mergeErr;
+      }
+
+      if (!mergeClean) {
+        // Merge wasn't clean but no error was thrown — check for conflict markers
+        const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+        if (conflictResult.mergeState.conflicts.length > 0) {
+          return conflictResult;
+        }
+      }
+
+      // 3. Merge was clean — retry push
+      try {
+        await git.push({
+          fs,
+          http,
+          dir,
+          remote: "origin",
+          ref,
+          onAuth: () => ({ username: token, password: "" }),
+        });
+        await completeTx(dir, txId);
+        await deleteGitCache(dir);
+        console.log(TAG, `push COMPLETE (after pull-merge) -> ${repoId} (${ref})`);
+        return { clean: true };
+      } catch (retryErr) {
+        await failTx(dir, txId);
+        console.error(TAG, `push (retry) FAILED -> ${repoId}`, retryErr);
+        throw retryErr;
+      }
     }
   }
 
@@ -293,7 +401,7 @@ export class GitEngine {
     token: string,
     branch?: string,
     author?: { name: string; email: string },
-  ): Promise<void> {
+  ): Promise<{ clean: true } | { clean: false; mergeState: MergeState }> {
     await this.init();
     const dir = this.resolveRepoDir(repoId);
 
@@ -326,20 +434,68 @@ export class GitEngine {
         singleBranch: true,
         onAuth: () => ({ username: token, password: "" }),
       });
-      // Fast-forward merge: merge the fetched remote branch into the current one
-      await git.merge({
-        fs,
-        dir,
-        ours: ref,
-        theirs: `remotes/origin/${ref}`,
-        author: author ?? { name: "GitLane User", email: "user@gitlane.app" },
-        fastForward: true,
-      });
+
+      const mergeAuthor = author ?? { name: "GitLane User", email: "user@gitlane.app" };
+      const theirRef = `remotes/origin/${ref}`;
+
+      let mergeClean = false;
+      try {
+        const mergeResult = await git.merge({
+          fs,
+          dir,
+          ours: ref,
+          theirs: theirRef,
+          author: mergeAuthor,
+          abortOnConflict: false,
+        });
+
+        if (mergeResult.oid && !mergeResult.alreadyMerged) {
+          await git.checkout({ fs, dir, ref, force: true });
+          mergeClean = true;
+        } else if (mergeResult.alreadyMerged) {
+          mergeClean = true;
+        }
+      } catch (mergeErr: any) {
+        if (
+          mergeErr?.code === 'MergeConflictError' ||
+          mergeErr?.code === 'MergeNotSupportedError' ||
+          (mergeErr?.message && mergeErr.message.includes('onflict'))
+        ) {
+          console.log(TAG, `pull→merge detected conflicts — entering resolution mode`);
+          // Update tx for crash recovery
+          await appendTx(dir, {
+            id: txId,
+            type: "merge",
+            status: "PENDING",
+            message: `MERGE_IN_PROGRESS: ${ref} <- ${theirRef} (pull)`,
+            startedAt: Date.now(),
+          });
+          return await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+        }
+        throw mergeErr; // re-throw non-conflict errors to outer catch
+      }
+
+      if (!mergeClean) {
+        // Merge didn't throw but also didn't produce a clean result — check for conflict markers
+        await appendTx(dir, {
+          id: txId,
+          type: "merge",
+          status: "PENDING",
+          message: `MERGE_IN_PROGRESS: ${ref} <- ${theirRef} (pull)`,
+          startedAt: Date.now(),
+        });
+        const conflictResult = await this.handleMergeConflicts(dir, repoId, ref, theirRef, txId);
+        if (conflictResult.mergeState.conflicts.length > 0) {
+          return conflictResult;
+        }
+      }
+
       // Checkout to update the working directory
       await git.checkout({ fs, dir, ref });
       await completeTx(dir, txId);
       await deleteGitCache(dir);
       console.log(TAG, `pull COMPLETE -> ${repoId} (${ref})`);
+      return { clean: true };
     } catch (err) {
       await failTx(dir, txId);
       console.error(TAG, `pull FAILED -> ${repoId}`, err);
@@ -974,37 +1130,352 @@ export class GitEngine {
   }
 
   // â”€â”€ Merge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Merge (conflict-aware) ───────────────────────────────────────────
 
+  /**
+   * Merge result: either clean merge or conflict state
+   */
   async merge(
     repoId: string,
     theirBranch: string,
     author: { name: string; email: string },
-  ) {
+  ): Promise<{ clean: true } | { clean: false; mergeState: MergeState }> {
     const dir = this.resolveRepoDir(repoId);
     const txId = randomId();
 
+    const current =
+      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+
+    // Log MERGE_IN_PROGRESS for crash recovery
     await appendTx(dir, {
       id: txId,
       type: "merge",
       status: "PENDING",
-      message: `merge ${theirBranch}`,
+      message: `MERGE_IN_PROGRESS: ${current} <- ${theirBranch}`,
       startedAt: Date.now(),
     });
-    console.log(TAG, `merge PENDING (txId=${txId}) â€“ merging ${theirBranch}`);
+    console.log(TAG, `merge PENDING (txId=${txId}) — merging ${theirBranch} into ${current}`);
 
     try {
-      const current =
-        (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
-      await git.merge({ fs, dir, ours: current, theirs: theirBranch, author });
-      await completeTx(dir, txId);
-      await deleteGitCache(dir);
-      console.log(TAG, `merge COMPLETED (txId=${txId})`);
-    } catch (err) {
+      const result = await git.merge({
+        fs,
+        dir,
+        ours: current,
+        theirs: theirBranch,
+        author,
+        abortOnConflict: false,
+      });
+
+      // Fast-forward or auto-merge succeeded
+      if (result.oid && !result.alreadyMerged) {
+        await git.checkout({ fs, dir, ref: current });
+        await completeTx(dir, txId);
+        await deleteGitCache(dir);
+        console.log(TAG, `merge COMPLETED cleanly (txId=${txId})`);
+        return { clean: true };
+      }
+
+      if (result.alreadyMerged) {
+        await completeTx(dir, txId);
+        console.log(TAG, `merge: already up-to-date (txId=${txId})`);
+        return { clean: true };
+      }
+
+      return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
+    } catch (err: any) {
+      if (
+        err?.code === 'MergeConflictError' ||
+        err?.code === 'MergeNotSupportedError' ||
+        (err?.message && err.message.includes('onflict'))
+      ) {
+        console.log(TAG, `merge detected conflicts — entering resolution mode`);
+        return await this.handleMergeConflicts(dir, repoId, current, theirBranch, txId);
+      }
       await failTx(dir, txId);
       console.error(TAG, `merge FAILED (txId=${txId})`, err);
       throw err;
     }
   }
+
+  /**
+   * Detect conflicted files and build the MergeState for the UI.
+   */
+  private async handleMergeConflicts(
+    dir: string,
+    repoId: string,
+    oursBranch: string,
+    theirsBranch: string,
+    txId: string,
+  ): Promise<{ clean: false; mergeState: MergeState }> {
+    let statusMatrix: [string, number, number, number][] = [];
+    try {
+      statusMatrix = await git.statusMatrix({ fs, dir });
+    } catch { /* fallback */ }
+
+    const conflictedPaths: string[] = [];
+
+    for (const [filepath, head, workdir, stage] of statusMatrix) {
+      if (filepath.startsWith('.git/') || filepath === '.git') continue;
+      if (stage === 3 || (workdir === 2 && head === 1)) {
+        const fullPath = joinPath(dir, filepath);
+        try {
+          const content = (await fs.promises.readFile(fullPath, 'utf8')) as string;
+          if (content.includes('<<<<<<<') && content.includes('>>>>>>>')) {
+            conflictedPaths.push(filepath);
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    if (conflictedPaths.length === 0) {
+      for (const [filepath, , workdir] of statusMatrix) {
+        if (filepath.startsWith('.git/')) continue;
+        if (workdir === 2) {
+          const fullPath = joinPath(dir, filepath);
+          try {
+            const content = (await fs.promises.readFile(fullPath, 'utf8')) as string;
+            if (content.includes('<<<<<<<') && content.includes('>>>>>>>')) {
+              conflictedPaths.push(filepath);
+            }
+          } catch { /* skip */ }
+        }
+      }
+    }
+
+    const conflicts: ConflictFile[] = [];
+    for (const filepath of conflictedPaths) {
+      const fullPath = joinPath(dir, filepath);
+      const rawContent = (await fs.promises.readFile(fullPath, 'utf8')) as string;
+
+      let oursContent = '';
+      try {
+        const oursOid = await git.resolveRef({ fs, dir, ref: oursBranch });
+        const { blob } = await git.readBlob({ fs, dir, oid: oursOid, filepath });
+        oursContent = new TextDecoder().decode(blob);
+      } catch { oursContent = ''; }
+
+      let theirsContent = '';
+      try {
+        const theirsOid = await git.resolveRef({ fs, dir, ref: theirsBranch });
+        const { blob } = await git.readBlob({ fs, dir, oid: theirsOid, filepath });
+        theirsContent = new TextDecoder().decode(blob);
+      } catch { theirsContent = ''; }
+
+      let baseContent = '';
+      try {
+        const oursOid = await git.resolveRef({ fs, dir, ref: oursBranch });
+        const theirsOid = await git.resolveRef({ fs, dir, ref: theirsBranch });
+        const [baseOid] = await git.findMergeBase({ fs, dir, oids: [oursOid, theirsOid] });
+        if (baseOid) {
+          const { blob } = await git.readBlob({ fs, dir, oid: baseOid, filepath });
+          baseContent = new TextDecoder().decode(blob);
+        }
+      } catch { baseContent = ''; }
+
+      const hunks = this.parseConflictHunks(rawContent);
+      const fileName = filepath.split('/').pop() ?? filepath;
+
+      conflicts.push({
+        id: `conflict-${filepath}`,
+        path: filepath,
+        name: fileName,
+        conflictCount: hunks.length,
+        resolved: false,
+        oursContent,
+        theirsContent,
+        baseContent,
+        resultContent: '',
+        oursBranch,
+        theirsBranch,
+        hunks,
+      });
+    }
+
+    const mergeState: MergeState = {
+      inProgress: true,
+      repoId,
+      oursBranch,
+      theirsBranch,
+      conflicts,
+      txId,
+    };
+
+    console.log(TAG, `merge conflicts: ${conflicts.length} files, ${conflicts.reduce((s, c) => s + c.hunks.length, 0)} hunks`);
+    return { clean: false, mergeState };
+  }
+
+  /**
+   * Parse Git conflict markers from a file into structured hunks.
+   */
+  private parseConflictHunks(rawContent: string): ConflictHunk[] {
+    const hunks: ConflictHunk[] = [];
+    const lines = rawContent.split('\n');
+    let i = 0;
+    let hunkIndex = 0;
+
+    while (i < lines.length) {
+      if (lines[i].startsWith('<<<<<<<')) {
+        const oursLines: string[] = [];
+        const baseLines: string[] = [];
+        const theirsLines: string[] = [];
+        let phase: 'ours' | 'base' | 'theirs' = 'ours';
+        i++;
+
+        while (i < lines.length && !lines[i].startsWith('>>>>>>>')) {
+          if (lines[i].startsWith('|||||||')) { phase = 'base'; i++; continue; }
+          if (lines[i].startsWith('=======')) { phase = 'theirs'; i++; continue; }
+          if (phase === 'ours') oursLines.push(lines[i]);
+          else if (phase === 'base') baseLines.push(lines[i]);
+          else theirsLines.push(lines[i]);
+          i++;
+        }
+        if (i < lines.length) i++;
+
+        hunks.push({
+          id: `hunk-${hunkIndex++}`,
+          oursContent: oursLines.join('\n'),
+          baseContent: baseLines.join('\n'),
+          theirsContent: theirsLines.join('\n'),
+          resolved: false,
+          resolution: null,
+          resultContent: '',
+        });
+      } else {
+        i++;
+      }
+    }
+    return hunks;
+  }
+
+  /**
+   * Stage a resolved conflict file.
+   */
+  async stageResolvedFile(repoId: string, filepath: string, resolvedContent: string): Promise<void> {
+    const dir = this.resolveRepoDir(repoId);
+    const fullPath = joinPath(dir, filepath);
+    await fs.promises.writeFile(fullPath, resolvedContent, 'utf8');
+    await git.add({ fs, dir, filepath });
+    console.log(TAG, `stageResolvedFile(${repoId}) → ${filepath}`);
+  }
+
+  /**
+   * Finalize a merge after all conflicts are resolved.
+   * Stages any remaining unmerged files before committing.
+   */
+  async finalizeMerge(
+    repoId: string,
+    theirBranch: string,
+    author: { name: string; email: string },
+    txId: string,
+    resolvedFiles?: { path: string; hunks: ConflictHunk[] }[],
+  ): Promise<void> {
+    const dir = this.resolveRepoDir(repoId);
+    const current =
+      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+
+    // If the caller provides resolved files, stage them all first
+    if (resolvedFiles && resolvedFiles.length > 0) {
+      for (const file of resolvedFiles) {
+        const fullPath = joinPath(dir, file.path);
+        try {
+          const rawContent = (await fs.promises.readFile(fullPath, 'utf8')) as string;
+          const resolvedContent = this.buildResolvedContent(rawContent, file.hunks);
+          await fs.promises.writeFile(fullPath, resolvedContent, 'utf8');
+          await git.add({ fs, dir, filepath: file.path });
+          console.log(TAG, `finalizeMerge → staged ${file.path}`);
+        } catch (err) {
+          console.warn(TAG, `finalizeMerge → failed to stage ${file.path}`, err);
+        }
+      }
+    }
+
+    // Also re-add any files that still appear unmerged in the index
+    try {
+      const statusMatrix = await git.statusMatrix({ fs, dir });
+      for (const [filepath, , , stage] of statusMatrix) {
+        if (filepath.startsWith('.git/')) continue;
+        // stage 3 = unmerged; stage 2 = modified but not added
+        if (stage === 3 || stage === 2) {
+          try {
+            await git.add({ fs, dir, filepath });
+            console.log(TAG, `finalizeMerge → re-staged unmerged file: ${filepath}`);
+          } catch (addErr) {
+            console.warn(TAG, `finalizeMerge → could not re-add ${filepath}`, addErr);
+          }
+        }
+      }
+    } catch (statusErr) {
+      console.warn(TAG, `finalizeMerge → statusMatrix check failed`, statusErr);
+    }
+
+    const message = `Merge branch '${theirBranch}' into ${current}`;
+    await git.commit({ fs, dir, message, author, committer: author });
+    await completeTx(dir, txId);
+    await deleteGitCache(dir);
+    console.log(TAG, `finalizeMerge COMPLETED — merged ${theirBranch} into ${current}`);
+  }
+
+  /**
+   * Abort an in-progress merge.
+   */
+  async abortMerge(repoId: string, txId: string): Promise<void> {
+    const dir = this.resolveRepoDir(repoId);
+    const current =
+      (await git.currentBranch({ fs, dir, fullname: false })) ?? "main";
+    await git.checkout({ fs, dir, ref: current, force: true });
+    await failTx(dir, txId);
+    await deleteGitCache(dir);
+    console.log(TAG, `abortMerge — restored ${current}`);
+  }
+
+  /**
+   * Read a file content from a specific branch ref.
+   */
+  async readFileAtRef(repoId: string, filepath: string, ref: string): Promise<string> {
+    const dir = this.resolveRepoDir(repoId);
+    try {
+      const oid = await git.resolveRef({ fs, dir, ref });
+      const { blob } = await git.readBlob({ fs, dir, oid, filepath });
+      return new TextDecoder().decode(blob);
+    } catch { return ''; }
+  }
+
+  /**
+   * Check if a repo has a pending MERGE_IN_PROGRESS transaction.
+   */
+  async getPendingMerge(repoId: string): Promise<TransactionEntry | null> {
+    const dir = this.resolveRepoDir(repoId);
+    const txList = await readTransactions(dir);
+    return txList.find(
+      (e) => e.status === 'PENDING' && e.message?.startsWith('MERGE_IN_PROGRESS')
+    ) ?? null;
+  }
+
+  /**
+   * Rebuild a file from its content with conflict markers, applying resolutions.
+   */
+  buildResolvedContent(rawContent: string, hunks: ConflictHunk[]): string {
+    const lines = rawContent.split('\n');
+    const result: string[] = [];
+    let lineIdx = 0;
+    let hunkIdx = 0;
+
+    while (lineIdx < lines.length) {
+      if (lines[lineIdx].startsWith('<<<<<<<') && hunkIdx < hunks.length) {
+        const hunk = hunks[hunkIdx++];
+        while (lineIdx < lines.length && !lines[lineIdx].startsWith('>>>>>>>')) {
+          lineIdx++;
+        }
+        if (lineIdx < lines.length) lineIdx++;
+        result.push(hunk.resultContent);
+      } else {
+        result.push(lines[lineIdx]);
+        lineIdx++;
+      }
+    }
+    return result.join('\n');
+  }
+
 
   // â”€â”€ Recovery: find PENDING transactions across all repos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 

@@ -4,9 +4,10 @@ import { listUserRepos } from "@/services/github/api";
 import { profileCache } from "@/services/storage/profileCache";
 import { storage } from "@/services/storage/storage";
 import { pushQueue } from "@/services/sync/pushQueue";
-import { AppSettings, ConflictFile, GitHubRepo } from "@/types/git";
+import { AppSettings, ConflictFile, ConflictHunk, GitHubRepo, MergeState } from "@/types/git";
 import createContextHook from "@nkzw/create-context-hook";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const TAG = "[GitContext]";
@@ -34,8 +35,10 @@ const SETTINGS_KEY = "gitlane:settings";
 
 export const [GitProvider, useGit] = createContextHook(() => {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [conflicts, setConflicts] = useState<ConflictFile[]>(mockConflicts);
+  const [mergeState, setMergeState] = useState<MergeState | null>(null);
   const [toastMessage, setToastMessage] = useState<{
     type: "success" | "error" | "warning" | "info";
     message: string;
@@ -341,18 +344,33 @@ export const [GitProvider, useGit] = createContextHook(() => {
       }
 
       try {
-        await gitEngine.push(
+        const author = {
+          name: settings.userConfig.name,
+          email: settings.userConfig.email,
+        };
+        const result = await gitEngine.push(
           selectedRepo.id,
           settings.githubToken,
           targetBranch,
+          author,
         );
+
+        if (!result.clean) {
+          // Push triggered a pull that found merge conflicts
+          setMergeState(result.mergeState);
+          setConflicts(result.mergeState.conflicts);
+          showToast("warning", "Remote has diverged — resolve merge conflicts before pushing");
+          router.push("/merge-conflicts");
+          return;
+        }
+
         showToast("success", `Pushed to origin/${targetBranch}`);
       } catch (err) {
         const message = err instanceof Error ? err.message : "Push failed";
         showToast("error", message);
       }
     },
-    [selectedRepo, settings.githubToken],
+    [selectedRepo, settings.githubToken, settings.userConfig],
   );
 
   const pullSelectedRepo = useCallback(
@@ -376,12 +394,22 @@ export const [GitProvider, useGit] = createContextHook(() => {
           name: settings.userConfig.name,
           email: settings.userConfig.email,
         };
-        await gitEngine.pull(
+        const result = await gitEngine.pull(
           selectedRepo.id,
           settings.githubToken,
           targetBranch,
           author,
         );
+
+        if (!result.clean) {
+          // Pull found merge conflicts
+          setMergeState(result.mergeState);
+          setConflicts(result.mergeState.conflicts);
+          showToast("warning", "Merge conflicts detected — resolve them to complete the pull");
+          router.push("/merge-conflicts");
+          return;
+        }
+
         await storage.deleteCache(selectedRepo.path);
         queryClient.invalidateQueries({ queryKey: ["repositories"] });
         queryClient.invalidateQueries({ queryKey: ["files", selectedRepo.id] });
@@ -419,32 +447,157 @@ export const [GitProvider, useGit] = createContextHook(() => {
       };
       console.log(TAG, `mergeInto(${repoId}, ${theirBranch})`);
       try {
-        await gitEngine.merge(repoId, theirBranch, author);
-        await storage.deleteCache(repo.path);
-        queryClient.invalidateQueries({ queryKey: ["repositories"] });
-        queryClient.invalidateQueries({ queryKey: ["files", repoId] });
-        queryClient.invalidateQueries({ queryKey: ["commits", repoId] });
-        showToast("success", `Merged ${theirBranch}`);
+        const result = await gitEngine.merge(repoId, theirBranch, author);
+        if (result.clean) {
+          await storage.deleteCache(repo.path);
+          queryClient.invalidateQueries({ queryKey: ["repositories"] });
+          queryClient.invalidateQueries({ queryKey: ["files", repoId] });
+          queryClient.invalidateQueries({ queryKey: ["commits", repoId] });
+          showToast("success", `Merged ${theirBranch}`);
+        } else {
+          // Conflicts detected — enter merge resolution mode
+          setMergeState(result.mergeState);
+          setConflicts(result.mergeState.conflicts);
+          showToast("warning", `${result.mergeState.conflicts.length} file(s) have conflicts`);
+          // Navigate to merge resolution screen
+          router.push("/merge-conflicts");
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Merge failed";
         showToast("error", message);
         throw err;
       }
     },
-    [repositoriesQuery.data, settings.userConfig, queryClient],
+    [repositoriesQuery.data, settings.userConfig, queryClient, router],
   );
 
-  const resolveConflict = useCallback(
-    (conflictId: string, resolution: string) => {
+  const resolveConflictHunk = useCallback(
+    (conflictId: string, hunkId: string, resolution: 'ours' | 'theirs' | 'both' | 'manual', manualContent?: string) => {
+      setMergeState((prev) => {
+        if (!prev) return prev;
+        const updatedConflicts = prev.conflicts.map((file) => {
+          if (file.id !== conflictId) return file;
+          const updatedHunks = file.hunks.map((hunk) => {
+            if (hunk.id !== hunkId) return hunk;
+            let resultContent = '';
+            switch (resolution) {
+              case 'ours':
+                resultContent = hunk.oursContent;
+                break;
+              case 'theirs':
+                resultContent = hunk.theirsContent;
+                break;
+              case 'both':
+                resultContent = hunk.oursContent + '\n' + hunk.theirsContent;
+                break;
+              case 'manual':
+                resultContent = manualContent ?? '';
+                break;
+            }
+            return { ...hunk, resolved: true, resolution, resultContent };
+          });
+          const allHunksResolved = updatedHunks.every((h) => h.resolved);
+          return {
+            ...file,
+            hunks: updatedHunks,
+            resolved: allHunksResolved,
+            resultContent: allHunksResolved ? 'resolved' : '',
+          };
+        });
+        return { ...prev, conflicts: updatedConflicts };
+      });
+      // Also update the flat conflicts array
       setConflicts((prev) =>
-        prev.map((c) =>
-          c.id === conflictId
-            ? { ...c, resolved: true, resultContent: resolution }
-            : c,
-        ),
+        prev.map((c) => {
+          if (c.id !== conflictId) return c;
+          const updatedHunks = c.hunks.map((hunk) => {
+            if (hunk.id !== hunkId) return hunk;
+            let resultContent = '';
+            switch (resolution) {
+              case 'ours': resultContent = hunk.oursContent; break;
+              case 'theirs': resultContent = hunk.theirsContent; break;
+              case 'both': resultContent = hunk.oursContent + '\n' + hunk.theirsContent; break;
+              case 'manual': resultContent = manualContent ?? ''; break;
+            }
+            return { ...hunk, resolved: true, resolution, resultContent };
+          });
+          const allResolved = updatedHunks.every((h) => h.resolved);
+          return { ...c, hunks: updatedHunks, resolved: allResolved };
+        }),
       );
     },
     [],
+  );
+
+  const stageResolvedConflictFile = useCallback(
+    async (conflictFile: ConflictFile) => {
+      if (!mergeState) return;
+      // Build resolved content from hunks
+      const dir = gitEngine.resolveRepoDir(mergeState.repoId);
+      // Read raw conflicted file
+      const { expoFS } = await import('@/services/git/expo-fs');
+      const rawContent = (await expoFS.promises.readFile(
+        `${dir}/${conflictFile.path}`,
+        'utf8',
+      )) as string;
+      const resolvedContent = gitEngine.buildResolvedContent(rawContent, conflictFile.hunks);
+      await gitEngine.stageResolvedFile(mergeState.repoId, conflictFile.path, resolvedContent);
+      showToast("success", `${conflictFile.name} marked as resolved`);
+    },
+    [mergeState],
+  );
+
+  const finalizeMerge = useCallback(
+    async () => {
+      if (!mergeState) return;
+      const author = {
+        name: settings.userConfig.name,
+        email: settings.userConfig.email,
+      };
+      try {
+        // Pass all resolved conflict files so engine can stage them
+        const resolvedFiles = mergeState.conflicts
+          .filter((c) => c.resolved)
+          .map((c) => ({ path: c.path, hunks: c.hunks }));
+
+        await gitEngine.finalizeMerge(
+          mergeState.repoId,
+          mergeState.theirsBranch,
+          author,
+          mergeState.txId,
+          resolvedFiles,
+        );
+        await storage.deleteCache(gitEngine.resolveRepoDir(mergeState.repoId));
+        queryClient.invalidateQueries({ queryKey: ["repositories"] });
+        queryClient.invalidateQueries({ queryKey: ["files", mergeState.repoId] });
+        queryClient.invalidateQueries({ queryKey: ["commits", mergeState.repoId] });
+        setMergeState(null);
+        setConflicts([]);
+        showToast("success", `Merge completed: ${mergeState.theirsBranch} → ${mergeState.oursBranch}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Finalize merge failed";
+        showToast("error", message);
+      }
+    },
+    [mergeState, settings.userConfig, queryClient],
+  );
+
+  const abortMerge = useCallback(
+    async () => {
+      if (!mergeState) return;
+      try {
+        await gitEngine.abortMerge(mergeState.repoId, mergeState.txId);
+        queryClient.invalidateQueries({ queryKey: ["repositories"] });
+        queryClient.invalidateQueries({ queryKey: ["files", mergeState.repoId] });
+        setMergeState(null);
+        setConflicts([]);
+        showToast("warning", "Merge aborted");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Abort merge failed";
+        showToast("error", message);
+      }
+    },
+    [mergeState, queryClient],
   );
 
   const showToast = useCallback(
@@ -505,6 +658,7 @@ export const [GitProvider, useGit] = createContextHook(() => {
     commits: commitsQuery.data ?? [],
     files: filesQuery.data ?? [],
     conflicts,
+    mergeState,
     settings,
     updateSettings,
     addRepository,
@@ -525,7 +679,10 @@ export const [GitProvider, useGit] = createContextHook(() => {
     saveFile,
     revertFile,
     commitChanges,
-    resolveConflict,
+    resolveConflictHunk,
+    stageResolvedConflictFile,
+    finalizeMerge,
+    abortMerge,
     toastMessage,
     showToast,
     isCloning,
